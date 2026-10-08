@@ -72,6 +72,8 @@
     <script>
         let allSites = [];
         let activeTag = null;
+        // 私有筛选项的哨兵值：带前导冒号，不会与用户标签名冲突
+        const PRIVATE_FILTER = ':private';
 
         async function loadSites() {
             const loading = document.getElementById('loading');
@@ -80,7 +82,9 @@
             const filterBar = document.getElementById('filterBar');
 
             try {
-                const res = await fetch('/api/sites');
+                // 已登录（后台常驻）带头请求，服务端才会返回私有站；访客匿名看到公开列表
+                const token = localStorage.getItem('token');
+                const res = await fetch('/api/sites', token ? { headers: { 'Authorization': `Bearer ${token}` } } : {});
                 const data = await res.json();
                 allSites = data.sites || [];
 
@@ -98,10 +102,14 @@
                     }
                 });
 
-                if (tags.size > 0) {
+                // 私有站只有登录态才会返回，出现即可认为已登录
+                const hasPrivate = allSites.some(s => s.visibility === 'private');
+
+                if (tags.size > 0 || hasPrivate) {
                     filterBar.classList.remove('hidden');
                     filterBar.innerHTML = `
                         <button class="tag px-3 py-1 font-mono text-xs rounded-full ${!activeTag ? 'active' : ''}" data-tag="">全部</button>
+                        ${hasPrivate ? `<button class="tag px-3 py-1 font-mono text-xs rounded-full ${activeTag === PRIVATE_FILTER ? 'active' : ''}" data-tag="${PRIVATE_FILTER}">私有</button>` : ''}
                         ${Array.from(tags).map(tag => `
                             <button class="tag px-3 py-1 font-mono text-xs rounded-full ${activeTag === tag ? 'active' : ''}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>
                         `).join('')}
@@ -127,9 +135,11 @@
             const sitesEl = document.getElementById('sites');
             const empty = document.getElementById('empty');
 
-            const filtered = activeTag
-                ? allSites.filter(s => s.tags && s.tags.split(',').map(t => t.trim()).includes(activeTag))
-                : allSites;
+            const filtered = activeTag === PRIVATE_FILTER
+                ? allSites.filter(s => s.visibility === 'private')
+                : activeTag
+                    ? allSites.filter(s => s.tags && s.tags.split(',').map(t => t.trim()).includes(activeTag))
+                    : allSites;
 
             if (filtered.length === 0) {
                 empty.classList.remove('hidden');
@@ -143,6 +153,7 @@
                     <div class="flex items-start justify-between mb-3">
                         <div class="flex items-center gap-2">
                             <span class="font-mono text-xs uppercase" style="color: var(--text-secondary);">/${site.slug}</span>
+                            ${site.visibility === 'private' ? '<span class="font-mono text-xs px-2 py-0.5 rounded-full" style="background: var(--border-color); color: var(--text-secondary);">私有</span>' : ''}
                             ${site.tags ? site.tags.split(',').map(t => t.trim()).filter(Boolean).map(tag => `
                                 <span class="tag px-2 py-0.5 font-mono text-xs rounded-full">${escapeHtml(tag)}</span>
                             `).join('') : ''}

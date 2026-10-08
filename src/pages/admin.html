@@ -122,7 +122,7 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                         <div>
                             <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">标签 (逗号分隔)</label>
-                            <input type="text" name="tags" placeholder="文本,实用,生活" class="input-field w-full p-4 font-mono text-sm">
+                            <input type="text" name="tags" placeholder="文本,实用,生活" class="input-field w-full p-4 font-mono text-sm" maxlength="200">
                         </div>
                         <div>
                             <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">
@@ -133,11 +133,25 @@
                     </div>
 
                     <div class="mb-6">
-                        <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">HTML 内容</label>
+                        <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">访问权限</label>
+                        <div class="flex items-center gap-6">
+                            <label class="flex items-center gap-2 text-sm" style="color: var(--text-secondary);">
+                                <input type="radio" name="visibility" value="public" checked> 公开
+                            </label>
+                            <label class="flex items-center gap-2 text-sm" style="color: var(--text-secondary);">
+                                <input type="radio" name="visibility" value="private"> 私有（需登录后访问，不出现在公开列表）
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="mb-6">
+                        <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">
+                            HTML 内容 <span class="text-xs font-normal">（首条为入口）</span>
+                        </label>
                         <div id="pagesContainer">
                             <div class="page-entry p-4 mb-4">
-                                <div class="flex gap-4 mb-2">
-                                    <input type="text" name="pageSlug" placeholder="子路径 (空为该主页)" class="input-field flex-1 p-2 font-mono text-sm">
+                                <div class="flex gap-4 mb-2 hidden" data-name-row>
+                                    <input type="text" name="pageName" placeholder="页面文件名如：index.html" class="input-field flex-1 p-2 font-mono text-sm">
                                 </div>
                                 <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required></textarea>
                             </div>
@@ -227,10 +241,19 @@
         });
 
         isMultiPage.addEventListener('change', function() {
+            const nameRows = pagesContainer.querySelectorAll('[data-name-row]');
             if (this.checked) {
                 addPageBtn.classList.remove('hidden');
+                nameRows.forEach((row, idx) => {
+                    row.classList.remove('hidden');
+                    // 勾选时给首条预填入口名，省一次手动输入
+                    if (idx === 0 && !row.querySelector('[name="pageName"]').value) {
+                        row.querySelector('[name="pageName"]').value = 'index.html';
+                    }
+                });
             } else {
                 addPageBtn.classList.add('hidden');
+                nameRows.forEach(row => row.classList.add('hidden'));
                 const entries = pagesContainer.querySelectorAll('.page-entry');
                 if (entries.length > 1) {
                     entries[entries.length - 1].remove();
@@ -239,14 +262,15 @@
         });
 
         // 页面条目模板：填充（编辑）与初始态共用，删除按钮仅非首页条目可配
+        // 页面名行仅多页面项目可见，由 isMultiPage 勾选态决定
         function renderPageEntry(page = {}, allowRemove = false) {
             const removeBtn = allowRemove
                 ? `<button type="button" onclick="this.closest('.page-entry').remove()" class="btn-danger px-2 py-1 font-mono text-xs">删除</button>`
                 : '';
             return `
                 <div class="page-entry p-4 mb-4">
-                    <div class="flex gap-4 mb-2">
-                        <input type="text" name="pageSlug" placeholder="子slug (空为该主页)" class="input-field flex-1 p-2 font-mono text-sm" value="${escapeHtml(page.slug || '')}">
+                    <div class="flex gap-4 mb-2 ${isMultiPage.checked ? '' : 'hidden'}" data-name-row>
+                        <input type="text" name="pageName" placeholder="页面文件名如：index.html" class="input-field flex-1 p-2 font-mono text-sm" value="${escapeHtml(page.name || '')}">
                         ${removeBtn}
                     </div>
                     <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required>${escapeHtml(page.html || '')}</textarea>
@@ -266,19 +290,15 @@
 
         async function loadSites() {
             try {
-                const res = await fetch('/api/sites');
+                // 必须带 token：服务端按登录态过滤私有站，匿名请求拿不到私有列表
+                const res = await fetch('/api/sites', { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await res.json();
                 const sites = data.sites || [];
 
-                if (sites.length === 0) {
-                    sitesList.innerHTML = `<p class="font-mono text-sm text-center py-8" style="color: var(--text-secondary);">暂无已发布的网页</p>`;
-                    return;
-                }
-
-                sitesList.innerHTML = sites.map(site => `
+                const renderItem = site => `
                     <div class="site-item p-6 border flex items-center justify-between fade-in" style="border-color: var(--border-color);">
                         <div class="flex items-center gap-4">
-                            <span class="w-2 h-2 bg-[var(--color-release)] rounded-full"></span>
+                            <span class="w-2 h-2 ${site.visibility === 'private' ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-release)]'} rounded-full"></span>
                             <div>
                                 <h3 class="font-bold text-lg">${escapeHtml(site.title)}</h3>
                                 <p class="font-mono text-xs" style="color: var(--text-secondary);">/${site.slug}${site.tags ? ' · ' + site.tags.split(',').map(t => t.trim()).join(' · ') : ''}</p>
@@ -290,7 +310,23 @@
                             <button onclick="showDeleteModal('${site.slug}')" class="btn-danger font-mono text-xs px-3 py-2">删除</button>
                         </div>
                     </div>
-                `).join('');
+                `;
+
+                const publicSites = sites.filter(s => s.visibility !== 'private');
+                const privateSites = sites.filter(s => s.visibility === 'private');
+
+                sitesList.innerHTML = `
+                    <h3 class="text-lg font-bold mb-4 flex items-center gap-3">
+                        <span class="w-2 h-2 bg-[var(--color-release)] rounded-full"></span>公开网页
+                        <span class="font-mono text-xs" style="color: var(--text-secondary);">(${publicSites.length})</span>
+                    </h3>
+                    <div class="space-y-4 mb-10">${publicSites.map(renderItem).join('') || '<p class="font-mono text-sm text-center py-8" style="color: var(--text-secondary);">暂无公开网页</p>'}</div>
+                    <h3 class="text-lg font-bold mb-4 flex items-center gap-3">
+                        <span class="w-2 h-2 bg-[var(--color-accent)] rounded-full"></span>私有网页
+                        <span class="font-mono text-xs" style="color: var(--text-secondary);">(${privateSites.length})</span>
+                    </h3>
+                    <div class="space-y-4">${privateSites.map(renderItem).join('') || '<p class="font-mono text-sm text-center py-8" style="color: var(--text-secondary);">暂无私有网页</p>'}</div>
+                `;
 
             } catch (err) {
                 sitesList.innerHTML = '<p class="text-red-500 font-mono text-sm">加载失败</p>';
@@ -341,7 +377,8 @@
 
         window.editSite = async function(slug) {
             try {
-                const res = await fetch('/api/sites');
+                // 编辑私有站也要带 token，否则列表里找不到它
+                const res = await fetch('/api/sites', { headers: { 'Authorization': `Bearer ${token}` } });
                 if (!res.ok) throw new Error('API Error');
                 const data = await res.json();
                 const site = (data.sites || []).find(s => s.slug === slug);
@@ -360,6 +397,8 @@
                 document.querySelector('[name="title"]').value = site.title || '';
                 document.querySelector('[name="tags"]').value = site.tags || '';
                 document.querySelector('[name="description"]').value = site.description || '';
+                const visibilityInput = document.querySelector(`input[name="visibility"][value="${site.visibility || 'public'}"]`);
+                if (visibilityInput) visibilityInput.checked = true;
 
                 if (site.pages && site.pages.length > 0) {
                     isMultiPage.checked = true;
@@ -394,7 +433,7 @@
 
             const pageEntries = pagesContainer.querySelectorAll('.page-entry');
             const pages = Array.from(pageEntries).map(entry => ({
-                slug: entry.querySelector('[name="pageSlug"]').value.trim(),
+                name: entry.querySelector('[name="pageName"]').value.trim(),
                 html: entry.querySelector('[name="html"]').value
             }));
 
@@ -404,8 +443,10 @@
                 tags: formData.get('tags'),
                 description: formData.get('description'),
                 html: pages[0].html,
-                pages: pages.length > 1 ? pages : null,
-                isMultiPage: formData.get('isMultiPage') === 'on'
+                // 勾选多页面才建沙盒；不勾选时 pages 为 null，整站单页直接渲染
+                pages: formData.get('isMultiPage') === 'on' ? pages : null,
+                isMultiPage: formData.get('isMultiPage') === 'on',
+                visibility: formData.get('visibility') || 'public'
             };
 
             try {

@@ -1,8 +1,17 @@
 // 后端共享模块：必须放在 functions/ 之外，否则会被 Pages 当成公开路由
 // KV 键约定：site:list / site:<slug> / auth:session:<token>
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SLUG_PATTERN = /^[a-z0-9-]+$/;
+// 页名：扁平文件名，允许扩展名但不含路径，如 a.html、style.css
+const PAGE_NAME_PATTERN = /^[a-z0-9._-]+$/;
+
+const MAX_TAG_LENGTH = 16;
+const MAX_TAGS = 10;
+const MAX_DESCRIPTION_LENGTH = 20;
+
+// 固定路由与接口前缀占用的路径，禁止作为站点 slug（发布时校验）
+const RESERVED_SLUGS = ["admin", "login", "index", "api", "assets"];
 
 // ===== 响应 =====
 
@@ -50,6 +59,63 @@ export function isValidSlug(slug) {
     return SLUG_PATTERN.test(slug);
 }
 
+// 沙盒内页名：扁平文件名，允许扩展名但不含路径，如 a.html、style.css
+export function isValidPageName(name) {
+    return PAGE_NAME_PATTERN.test(name);
+}
+
+// ===== 标签 =====
+
+// 标签保留词：与首页私有筛选项同义，避免用户标签和私有筛选混淆
+const RESERVED_TAGS = ["私有", "private", "privatepage", "已私有"];
+// 中英文逗号都算分隔符，中文用户易误输全角
+const TAG_SEPARATOR = /[,，]/;
+
+// 规范化标签：去空、去重、限长限条；非法返回中文错误
+export function normalizeTags(raw) {
+    if (!raw) {
+        return { tags: "" };
+    }
+    if (typeof raw !== "string") {
+        return { error: "标签格式不正确，请用逗号分隔的文本" };
+    }
+    const seen = new Set();
+    const tags = [];
+    for (const part of raw.split(TAG_SEPARATOR)) {
+        const tag = part.trim();
+        if (!tag) continue;
+
+        if (tag.length > MAX_TAG_LENGTH) {
+            return { error: `标签「${tag}」超过 ${MAX_TAG_LENGTH} 个字符` };
+        }
+        if (RESERVED_TAGS.includes(tag.toLowerCase())) {
+            return { error: `标签「${tag}」是保留词，请换一个` };
+        }
+        if (seen.has(tag)) continue;
+
+        seen.add(tag);
+        tags.push(tag);
+    }
+
+    if (tags.length > MAX_TAGS) {
+        return { error: `标签最多 ${MAX_TAGS} 个，当前 ${tags.length} 个` };
+    }
+    return { tags: tags.join(",") };
+}
+
+// 描述与前端 maxlength 对齐，API 直发也要受限
+export function normalizeDescription(raw) {
+    const text = raw ? String(raw).trim() : "";
+    if (text.length > MAX_DESCRIPTION_LENGTH) {
+        return { error: `描述最多 ${MAX_DESCRIPTION_LENGTH} 个字符` };
+    }
+    return { description: text };
+}
+
+export function isReservedSlug(slug) {
+    return RESERVED_SLUGS.includes(slug);
+}
+
 // ===== 鉴权 =====
 
 export function timingSafeEqual(a, b) {
@@ -61,9 +127,15 @@ export function timingSafeEqual(a, b) {
     return diff === 0;
 }
 
+// 页面导航不带 Authorization 头，必须支持 Cookie 会话，否则登录后直接访问私有页会 302 死循环
 export function getBearerToken(request) {
     const header = request.headers.get("Authorization") || "";
-    return header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (header.startsWith("Bearer ")) {
+        return header.slice(7);
+    }
+    const cookie = request.headers.get("Cookie") || "";
+    const match = cookie.match(/(?:^|;\s*)session=([^;]+)/);
+    return match ? match[1] : "";
 }
 
 export async function issueSession(env) {
@@ -160,6 +232,6 @@ export async function purgePageCache(request, slug, subSlugs = []) {
     await Promise.all(paths.map(p => safeDelete(canonicalCacheKey(request, p))));
 }
 
-export function subSlugsOf(site) {
-    return (site && site.pages || []).map(p => p.slug).filter(Boolean);
+export function pageNamesOf(site) {
+    return (site && site.pages || []).map(p => p.name).filter(Boolean);
 }

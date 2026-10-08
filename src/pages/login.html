@@ -131,7 +131,9 @@
 
                 if (data.success) {
                     localStorage.setItem('token', data.token);
-                    window.location.href = '/admin.html';
+                    // 跳回来源页（?next=），仅接受站内相对路径防开放重定向
+                    const next = new URLSearchParams(location.search).get('next');
+                    window.location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/admin.html';
                 } else {
                     errorEl.textContent = data.error;
                     errorEl.classList.remove('hidden');

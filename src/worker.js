@@ -1,4 +1,4 @@
-import { canonicalCacheKey, getSite, htmlResponse, withCacheHit } from "./common.js";
+import { canonicalCacheKey, getSite, htmlResponse, verifySession, withCacheHit } from "./common.js";
 import { pages, assets } from "./entries.js";
 import { login } from "./api/login.js";
 import { checkAuth, logout } from "./api/logout.js";
@@ -23,8 +23,59 @@ function assetResponse(asset) {
     });
 }
 
-// KV 动态工具页：路由与 KV 命中之外一律返回 null 交回 404
-async function siteResponse(slug, request, env, waitUntil) {
+// 沙盒渲染：首条页面即入口（如 a.html），其余按页名精确匹配
+function resolvePage(site, pageName) {
+    const pages = site.pages || [];
+    if (pages.length === 0) {
+        // 单页站：整站就是一页，任意子路径都非法
+        return pageName ? null : { html: site.html };
+    }
+    if (!pageName) {
+        return null;
+    }
+    return pages.find(p => p.name === pageName) || null;
+}
+
+// 沙盒页渲染，公开私有共用：子页跟随主页的可见性
+function renderSitePage(site, pageName) {
+    const page = resolvePage(site, pageName);
+    return page && page.html ? htmlResponse(page.html) : notFound();
+}
+
+// 主 slug 重定向到入口页：让页内相对链接以 /slug/ 为基准解析
+function redirectToEntry(site, request) {
+    const entry = (site.pages || [])[0];
+    if (!entry || !entry.name) return null;
+    const url = new URL(request.url);
+    url.pathname = `/${site.slug}/${entry.name}`;
+    return Response.redirect(url, 302);
+}
+
+// 站点级响应：私有先判登录（302 到登录页），之后主 slug 跳入口、渲染页
+async function respondWithSite(site, pageName, request, env, waitUntil) {
+    if (site.visibility === "private") {
+        if (!await verifySession(request, env)) {
+            const url = new URL(request.url);
+            const next = encodeURIComponent(url.pathname + url.search);
+            return Response.redirect(new URL(`/login?next=${next}`, url.origin), 302);
+        }
+    }
+
+    // 主 slug（无页名）：多页沙盒跳入口页，单页站直接渲染
+    if (!pageName) {
+        const entryRedirect = redirectToEntry(site, request);
+        if (entryRedirect) return entryRedirect;
+    }
+
+    if (site.visibility === "private") {
+        const privatePage = renderSitePage(site, pageName);
+        return new Response(privatePage.body, {
+            status: privatePage.status,
+            // fromEntries 出来的键是小写，覆盖时必须同小写，否则两个键被 Headers 合并成串联值
+            headers: { ...Object.fromEntries(privatePage.headers), "cache-control": "no-store" }
+        });
+    }
+
     const cacheKey = canonicalCacheKey(request);
 
     try {
@@ -36,25 +87,7 @@ async function siteResponse(slug, request, env, waitUntil) {
         console.log("Cache not available:", e.message);
     }
 
-    const parts = slug.split("/");
-    const site = await getSite(env, parts[0]);
-    if (!site) {
-        return null;
-    }
-
-    let response;
-    const subSlug = parts[1];
-    if (subSlug && site.pages && site.pages.length > 0) {
-        // 多页面项目：命中子 slug 返回子页面，未命中返回 404
-        const subPage = site.pages.find(p => p.slug === subSlug);
-        response = subPage ? htmlResponse(subPage.html) : notFound();
-    } else {
-        response = site.html ? htmlResponse(site.html) : null;
-    }
-
-    if (!response) {
-        return null;
-    }
+    const response = renderSitePage(site, pageName);
 
     if (response.status === 200) {
         waitUntil((async () => {
@@ -67,6 +100,16 @@ async function siteResponse(slug, request, env, waitUntil) {
     }
 
     return response;
+}
+
+// KV 动态沙盒页：/<slug>（index 页）、/<slug>/<页名>
+async function siteResponse(slug, request, env, waitUntil) {
+    const parts = slug.split("/");
+    const site = await getSite(env, parts[0]);
+    if (!site) {
+        return null;
+    }
+    return respondWithSite(site, parts[1], request, env, waitUntil);
 }
 
 async function handleApi(path, method, request, env, waitUntil) {

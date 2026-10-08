@@ -23,6 +23,8 @@ await build({
     format: 'esm',
     target: 'es2022',
     outfile,
+    // 默认 ascii 会把内嵌 HTML 里的中文转义成 \uXXXX，单文件要人工审查，保留字面中文
+    charset: 'utf8',
     plugins: [embedPlugin],
     legalComments: 'none'
 });

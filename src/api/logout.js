@@ -8,7 +8,9 @@ export async function logout(request, env) {
 
     await revokeSession(env, getBearerToken(request));
 
-    return jsonResponse({ success: true });
+    return jsonResponse({ success: true }, 200, {
+        "Set-Cookie": "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    });
 }
 
 export async function checkAuth(request, env) {
