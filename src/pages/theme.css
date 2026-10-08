@@ -1,0 +1,41 @@
+/* 三页共享主题：变量、基础排版、主题切换按钮 */
+:root {
+    --color-accent: #ff6b35;
+    --color-release: #22c55e;
+}
+
+[data-theme="light"] {
+    --bg-primary: #fafafa;
+    --bg-card: #ffffff;
+    --text-primary: #1a1a1a;
+    --text-secondary: #6b7280;
+    --border-color: #e5e5e5;
+}
+
+[data-theme="dark"] {
+    --bg-primary: #0f0f0f;
+    --bg-card: #1a1a1a;
+    --text-primary: #f5f5f5;
+    --text-secondary: #9ca3af;
+    --border-color: #2d2d2d;
+}
+
+body {
+    font-family: 'Noto Serif SC', serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: background 0.3s ease, color 0.3s ease;
+}
+
+.font-mono { font-family: 'Space Mono', monospace; }
+
+header, footer { border-color: var(--border-color) !important; }
+
+.theme-toggle {
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 8px;
+    transition: background 0.3s ease;
+}
+
+.theme-toggle:hover { background: var(--border-color); }

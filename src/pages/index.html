@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HtmlBox - 网页盒子</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="/assets/theme.css">
+    <script src="/assets/common.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        .card { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
+        }
+        .card:hover .card-arrow { transform: translate(5px, -5px); opacity: 1; }
+        .card-arrow { opacity: 0; transition: all 0.3s ease; }
+        .loading { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .fade-up { opacity: 0; transform: translateY(30px); animation: fadeUp 0.6s ease forwards; }
+        @keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
+        .tag { background: var(--border-color); color: var(--text-secondary); }
+        .tag.active { background: var(--color-accent); color: white; }
+    </style>
+</head>
+<body>
+    <header class="py-8 px-6 border-b">
+        <div class="max-w-6xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-4xl font-bold">HtmlBox</h1>
+                <p class="font-mono text-sm mt-1" style="color: var(--text-secondary);">Html Collection</p>
+            </div>
+            <div class="flex items-center gap-6">
+                <nav class="flex gap-6 font-mono text-sm">
+                    <a href="/" style="color: var(--text-primary);">首页</a>
+                    <a href="/admin.html" style="color: var(--text-secondary);">管理</a>
+                </nav>
+                <button id="themeToggle" class="theme-toggle" title="切换主题">
+                    <svg id="sunIcon" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <svg id="moonIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div id="filterBar" class="hidden max-w-6xl mx-auto mt-6 flex justify-end gap-2"></div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 py-16">
+        <div id="loading" class="text-center py-20">
+            <div class="font-mono text-sm loading" style="color: var(--text-secondary);">Loading...</div>
+        </div>
+
+        <div id="empty" class="hidden text-center py-20">
+            <p class="font-mono text-lg" style="color: var(--text-secondary);">暂无工具</p>
+            <a href="/admin.html" class="inline-block mt-6 text-[var(--color-accent)] font-mono text-sm hover:underline">立即添加 →</a>
+        </div>
+
+        <div id="sites" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8"></div>
+    </main>
+
+    <footer class="py-8 px-6 border-t mt-auto">
+        <div class="max-w-6xl mx-auto text-center font-mono text-xs" style="color: var(--text-secondary);">
+            <p>Powered by <a href="https://github.com/LimpidMo/HtmlBox" target="_blank" class="hover:underline">LimpidMo</a></p>
+        </div>
+    </footer>
+
+    <script>
+        let allSites = [];
+        let activeTag = null;
+
+        async function loadSites() {
+            const loading = document.getElementById('loading');
+            const empty = document.getElementById('empty');
+            const sitesEl = document.getElementById('sites');
+            const filterBar = document.getElementById('filterBar');
+
+            try {
+                const res = await fetch('/api/sites');
+                const data = await res.json();
+                allSites = data.sites || [];
+
+                loading.classList.add('hidden');
+
+                if (allSites.length === 0) {
+                    empty.classList.remove('hidden');
+                    return;
+                }
+
+                const tags = new Set();
+                allSites.forEach(site => {
+                    if (site.tags) {
+                        site.tags.split(',').forEach(t => t.trim() && tags.add(t.trim()));
+                    }
+                });
+
+                if (tags.size > 0) {
+                    filterBar.classList.remove('hidden');
+                    filterBar.innerHTML = `
+                        <button class="tag px-3 py-1 font-mono text-xs rounded-full ${!activeTag ? 'active' : ''}" data-tag="">全部</button>
+                        ${Array.from(tags).map(tag => `
+                            <button class="tag px-3 py-1 font-mono text-xs rounded-full ${activeTag === tag ? 'active' : ''}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>
+                        `).join('')}
+                    `;
+                    filterBar.querySelectorAll('.tag').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            activeTag = btn.dataset.tag;
+                            filterBar.querySelectorAll('.tag').forEach(b => b.classList.remove('active'));
+                            btn.classList.add('active');
+                            renderSites();
+                        });
+                    });
+                }
+
+                renderSites();
+
+            } catch (err) {
+                loading.innerHTML = '<p class="text-red-500 font-mono">加载失败</p>';
+            }
+        }
+
+        function renderSites() {
+            const sitesEl = document.getElementById('sites');
+            const empty = document.getElementById('empty');
+
+            const filtered = activeTag
+                ? allSites.filter(s => s.tags && s.tags.split(',').map(t => t.trim()).includes(activeTag))
+                : allSites;
+
+            if (filtered.length === 0) {
+                empty.classList.remove('hidden');
+                sitesEl.innerHTML = '';
+                return;
+            }
+
+            empty.classList.add('hidden');
+            sitesEl.innerHTML = filtered.map(site => `
+                <a href="/${site.slug}" class="card block p-6 border fade-up" style="animation-fill-mode: both; background: var(--bg-card); border-color: var(--border-color);">
+                    <div class="flex items-start justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <span class="font-mono text-xs uppercase" style="color: var(--text-secondary);">/${site.slug}</span>
+                            ${site.tags ? site.tags.split(',').map(t => t.trim()).filter(Boolean).map(tag => `
+                                <span class="tag px-2 py-0.5 font-mono text-xs rounded-full">${escapeHtml(tag)}</span>
+                            `).join('') : ''}
+                        </div>
+                        <svg class="card-arrow w-4 h-4 text-[var(--color-accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </div>
+                    <h2 class="text-xl font-bold mb-2" style="color: var(--text-primary); line-height: 1.3;">${escapeHtml(site.title)}</h2>
+                    ${site.description ? `<p class="font-mono text-xs line-clamp-2" style="color: var(--text-secondary); line-height: 1.5;">${escapeHtml(site.description)}</p>` : ''}
+                </a>
+            `).join('');
+        }
+
+        loadSites();
+    </script>
+</body>
+</html>

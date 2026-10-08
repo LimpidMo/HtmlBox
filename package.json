@@ -1,0 +1,13 @@
+{
+  "name": "htmlbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "npm run build && wrangler dev --port 8888",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

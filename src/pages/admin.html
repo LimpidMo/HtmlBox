@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理 - HtmlBox</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="/assets/theme.css">
+    <script src="/assets/common.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        .input-field {
+            border: 2px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+        .input-field:focus {
+            border-color: var(--text-primary);
+            outline: none;
+        }
+        .btn-primary {
+            background: var(--text-primary);
+            color: var(--bg-primary);
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover { background: var(--color-accent); }
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+        .btn-secondary:hover { border-color: var(--text-primary); color: var(--text-primary); }
+        .btn-danger {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+        .btn-danger:hover { border-color: #ff4444; color: #ff4444; }
+        .site-item { background: var(--bg-card); transition: all 0.3s ease; }
+        .fade-in { animation: fadeIn 0.4s ease forwards; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .page-entry { border-left: 3px solid var(--color-accent); }
+
+        /* 必须 !important：.modal-overlay 的 display:flex 特异性同级且在注入顺序后，会盖掉 Tailwind 的 .hidden */
+        .hidden { display: none !important; }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+        }
+    </style>
+</head>
+<body>
+    <header class="py-8 px-6 border-b bg-[var(--bg-card)]">
+        <div class="max-w-4xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-3xl font-bold">管理后台</h1>
+                <p class="font-mono text-sm mt-1" style="color: var(--text-secondary);">Site Management</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <button id="themeToggle" class="theme-toggle" title="切换主题">
+                    <svg id="sunIcon" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <svg id="moonIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
+                <a href="/" class="font-mono text-sm transition-colors" style="color: var(--text-secondary);">首页</a>
+                <button id="logoutBtn" class="font-mono text-sm transition-colors" style="color: var(--text-secondary);">退出</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto px-6 py-12">
+        <div id="authError" class="hidden text-center py-20">
+            <p style="color: var(--text-secondary);">请先登录</p>
+            <a href="/login.html" class="text-[var(--color-accent)] font-mono text-sm hover:underline">前往登录 →</a>
+        </div>
+
+        <div id="content" class="hidden">
+            <section class="mb-16">
+                <h2 id="formTitle" class="text-xl font-bold mb-6 flex items-center gap-3">
+                    <span class="w-2 h-2 bg-[var(--color-accent)] rounded-full"></span>
+                    添加新网页
+                </h2>
+
+                <form id="addForm" class="bg-[var(--bg-card)] p-8 border fade-in" style="border-color: var(--border-color);">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                        <div>
+                            <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">访问路径 (Slug)</label>
+                            <input type="text" name="slug" placeholder="my-tool 则访问路径为/my-tool" class="input-field w-full p-4 font-mono text-sm" required>
+                        </div>
+                        <div>
+                            <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">标题</label>
+                            <input type="text" name="title" placeholder="工具名称" class="input-field w-full p-4" required>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                        <div>
+                            <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">标签 (逗号分隔)</label>
+                            <input type="text" name="tags" placeholder="文本,实用,生活" class="input-field w-full p-4 font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">
+                                描述 <span id="descCount" class="text-xs font-normal">(0 / 20)</span>
+                            </label>
+                            <input type="text" name="description" id="descriptionInput" placeholder="简要描述" class="input-field w-full p-4" maxlength="20">
+                        </div>
+                    </div>
+
+                    <div class="mb-6">
+                        <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">HTML 内容</label>
+                        <div id="pagesContainer">
+                            <div class="page-entry p-4 mb-4">
+                                <div class="flex gap-4 mb-2">
+                                    <input type="text" name="pageSlug" placeholder="子路径 (空为该主页)" class="input-field flex-1 p-2 font-mono text-sm">
+                                </div>
+                                <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required></textarea>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 mt-4">
+                            <input type="checkbox" name="isMultiPage" id="isMultiPage" class="w-4 h-4">
+                            <label for="isMultiPage" class="text-sm" style="color: var(--text-secondary);">多页面项目</label>
+                            <button type="button" id="addPageBtn" class="hidden btn-secondary px-3 py-1 font-mono text-xs">+ 添加页面</button>
+                        </div>
+                    </div>
+
+                    <div class="flex justify-end gap-3">
+                        <button type="button" id="cancelEditBtn" class="hidden btn-secondary px-6 py-3 font-mono text-sm">取消</button>
+                        <button type="submit" id="submitBtn" class="btn-primary px-8 py-3 font-mono text-sm uppercase tracking-wider">
+                            发布
+                        </button>
+                    </div>
+                </form>
+
+                <div id="formMsg" class="mt-4 font-mono text-sm hidden"></div>
+            </section>
+
+            <section>
+                <h2 class="text-xl font-bold mb-6 flex items-center gap-3">
+                    <span class="w-2 h-2 bg-[var(--color-release)] rounded-full"></span>
+                    已发布网页
+                </h2>
+
+                <div id="sitesList" class="space-y-4"></div>
+            </section>
+        </div>
+    </main>
+
+    <div id="deleteModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-lg font-bold mb-4">确认删除</h3>
+            <p class="mb-6" style="color: var(--text-secondary);">确定要删除 <span id="deleteSlug" class="font-mono"></span> 吗？此操作无法撤销。</p>
+            <div class="flex justify-end gap-3">
+                <button id="cancelDelete" class="btn-secondary px-6 py-2 font-mono text-sm">取消</button>
+                <button id="confirmDelete" class="btn-danger px-6 py-2 font-mono text-sm">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 确保删除弹窗默认隐藏
+        document.getElementById('deleteModal').classList.add('hidden');
+
+        const token = localStorage.getItem('token');
+        const content = document.getElementById('content');
+        const authError = document.getElementById('authError');
+        const addForm = document.getElementById('addForm');
+        const formMsg = document.getElementById('formMsg');
+        const sitesList = document.getElementById('sitesList');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const isMultiPage = document.getElementById('isMultiPage');
+        const addPageBtn = document.getElementById('addPageBtn');
+        const pagesContainer = document.getElementById('pagesContainer');
+        const descriptionInput = document.getElementById('descriptionInput');
+        const descCount = document.getElementById('descCount');
+        const formTitle = document.getElementById('formTitle');
+        const submitBtn = document.getElementById('submitBtn');
+        const cancelEditBtn = document.getElementById('cancelEditBtn');
+        const deleteModal = document.getElementById('deleteModal');
+        const deleteSlugEl = document.getElementById('deleteSlug');
+        const cancelDelete = document.getElementById('cancelDelete');
+        const confirmDelete = document.getElementById('confirmDelete');
+
+        let deleteTargetSlug = null;
+        let editingSlug = null;
+
+        descriptionInput.addEventListener('input', function() {
+            descCount.textContent = `(${this.value.length} / 20)`;
+        });
+
+        if (!token) {
+            authError.classList.remove('hidden');
+        } else {
+            content.classList.remove('hidden');
+            loadSites();
+        }
+
+        logoutBtn.addEventListener('click', async () => {
+            await fetch('/api/auth/logout', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+            localStorage.removeItem('token');
+            window.location.href = '/';
+        });
+
+        isMultiPage.addEventListener('change', function() {
+            if (this.checked) {
+                addPageBtn.classList.remove('hidden');
+            } else {
+                addPageBtn.classList.add('hidden');
+                const entries = pagesContainer.querySelectorAll('.page-entry');
+                if (entries.length > 1) {
+                    entries[entries.length - 1].remove();
+                }
+            }
+        });
+
+        // 页面条目模板：填充（编辑）与初始态共用，删除按钮仅非首页条目可配
+        function renderPageEntry(page = {}, allowRemove = false) {
+            const removeBtn = allowRemove
+                ? `<button type="button" onclick="this.closest('.page-entry').remove()" class="btn-danger px-2 py-1 font-mono text-xs">删除</button>`
+                : '';
+            return `
+                <div class="page-entry p-4 mb-4">
+                    <div class="flex gap-4 mb-2">
+                        <input type="text" name="pageSlug" placeholder="子slug (空为该主页)" class="input-field flex-1 p-2 font-mono text-sm" value="${escapeHtml(page.slug || '')}">
+                        ${removeBtn}
+                    </div>
+                    <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required>${escapeHtml(page.html || '')}</textarea>
+                </div>
+            `;
+        }
+
+        function resetPagesContainer() {
+            pagesContainer.innerHTML = renderPageEntry();
+            addPageBtn.classList.add('hidden');
+            isMultiPage.checked = false;
+        }
+
+        addPageBtn.addEventListener('click', function() {
+            pagesContainer.insertAdjacentHTML('beforeend', renderPageEntry({}, true));
+        });
+
+        async function loadSites() {
+            try {
+                const res = await fetch('/api/sites');
+                const data = await res.json();
+                const sites = data.sites || [];
+
+                if (sites.length === 0) {
+                    sitesList.innerHTML = `<p class="font-mono text-sm text-center py-8" style="color: var(--text-secondary);">暂无已发布的网页</p>`;
+                    return;
+                }
+
+                sitesList.innerHTML = sites.map(site => `
+                    <div class="site-item p-6 border flex items-center justify-between fade-in" style="border-color: var(--border-color);">
+                        <div class="flex items-center gap-4">
+                            <span class="w-2 h-2 bg-[var(--color-release)] rounded-full"></span>
+                            <div>
+                                <h3 class="font-bold text-lg">${escapeHtml(site.title)}</h3>
+                                <p class="font-mono text-xs" style="color: var(--text-secondary);">/${site.slug}${site.tags ? ' · ' + site.tags.split(',').map(t => t.trim()).join(' · ') : ''}</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <a href="/${site.slug}" target="_blank" class="font-mono text-xs px-3 py-2" style="color: var(--text-secondary);">查看</a>
+                            <button onclick="editSite('${site.slug}')" class="btn-secondary font-mono text-xs px-3 py-2">修改</button>
+                            <button onclick="showDeleteModal('${site.slug}')" class="btn-danger font-mono text-xs px-3 py-2">删除</button>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (err) {
+                sitesList.innerHTML = '<p class="text-red-500 font-mono text-sm">加载失败</p>';
+            }
+        }
+
+        cancelDelete.addEventListener('click', closeDeleteModal);
+
+        deleteModal.addEventListener('click', function(e) {
+            if (e.target === deleteModal) closeDeleteModal();
+        });
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && !deleteModal.classList.contains('hidden')) closeDeleteModal();
+        });
+
+        function closeDeleteModal() {
+            deleteModal.classList.add('hidden');
+            deleteTargetSlug = null;
+        }
+
+        confirmDelete.addEventListener('click', async function() {
+            if (!deleteTargetSlug) return;
+            try {
+                const res = await fetch(`/api/sites?slug=${deleteTargetSlug}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeDeleteModal();
+                    loadSites();
+                } else {
+                    alert(data.error || '删除失败');
+                }
+            } catch (err) {
+                alert('网络错误');
+            }
+            deleteTargetSlug = null;
+        });
+
+        window.showDeleteModal = function(slug) {
+            if (!slug) return;
+            deleteTargetSlug = slug;
+            deleteSlugEl.textContent = '/' + slug;
+            deleteModal.classList.remove('hidden');
+        };
+
+        window.editSite = async function(slug) {
+            try {
+                const res = await fetch('/api/sites');
+                if (!res.ok) throw new Error('API Error');
+                const data = await res.json();
+                const site = (data.sites || []).find(s => s.slug === slug);
+                if (!site) {
+                    alert('未找到该网页');
+                    return;
+                }
+
+                editingSlug = slug;
+                formTitle.textContent = '修改网页';
+                submitBtn.textContent = '保存修改';
+                cancelEditBtn.classList.remove('hidden');
+
+                document.querySelector('[name="slug"]').value = site.slug;
+                document.querySelector('[name="slug"]').disabled = true;
+                document.querySelector('[name="title"]').value = site.title || '';
+                document.querySelector('[name="tags"]').value = site.tags || '';
+                document.querySelector('[name="description"]').value = site.description || '';
+
+                if (site.pages && site.pages.length > 0) {
+                    isMultiPage.checked = true;
+                    addPageBtn.classList.remove('hidden');
+                    pagesContainer.innerHTML = site.pages.map((page, idx) => renderPageEntry(page, idx > 0)).join('');
+                } else {
+                    isMultiPage.checked = false;
+                    addPageBtn.classList.add('hidden');
+                    pagesContainer.innerHTML = renderPageEntry({ html: site.html || '' });
+                }
+
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            } catch (err) {
+                console.error('Edit error:', err);
+                alert('加载失败: ' + err.message);
+            }
+        };
+
+        cancelEditBtn.addEventListener('click', function() {
+            editingSlug = null;
+            formTitle.textContent = '添加新网页';
+            submitBtn.textContent = '发布';
+            cancelEditBtn.classList.add('hidden');
+            document.querySelector('[name="slug"]').disabled = false;
+            addForm.reset();
+            resetPagesContainer();
+        });
+
+        addForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(addForm);
+
+            const pageEntries = pagesContainer.querySelectorAll('.page-entry');
+            const pages = Array.from(pageEntries).map(entry => ({
+                slug: entry.querySelector('[name="pageSlug"]').value.trim(),
+                html: entry.querySelector('[name="html"]').value
+            }));
+
+            const payload = {
+                slug: editingSlug || formData.get('slug'),
+                title: formData.get('title'),
+                tags: formData.get('tags'),
+                description: formData.get('description'),
+                html: pages[0].html,
+                pages: pages.length > 1 ? pages : null,
+                isMultiPage: formData.get('isMultiPage') === 'on'
+            };
+
+            try {
+                const method = editingSlug ? 'PUT' : 'POST';
+                const res = await fetch('/api/sites', {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    formMsg.textContent = editingSlug ? '修改成功！' : '发布成功！';
+                    formMsg.className = 'mt-4 font-mono text-sm text-green-600';
+                    formMsg.classList.remove('hidden');
+
+                    if (editingSlug) {
+                        cancelEditBtn.click();
+                    } else {
+                        addForm.reset();
+                        resetPagesContainer();
+                    }
+                    loadSites();
+                } else {
+                    formMsg.textContent = data.error || '发布失败';
+                    formMsg.className = 'mt-4 font-mono text-sm text-red-600';
+                    formMsg.classList.remove('hidden');
+                }
+            } catch (err) {
+                formMsg.textContent = '网络错误';
+                formMsg.className = 'mt-4 font-mono text-sm text-red-600';
+                formMsg.classList.remove('hidden');
+            }
+
+            setTimeout(() => formMsg.classList.add('hidden'), 3000);
+        });
+    </script>
+</body>
+</html>

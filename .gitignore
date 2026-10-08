@@ -1,0 +1,13 @@
+# Logs
+logs
+*.log
+
+# wrangler
+.wrangler
+.dev.vars
+wrangler.toml
+
+# Local files
+node_modules
+docs
+AGENTS.md
