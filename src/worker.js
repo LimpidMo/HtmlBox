@@ -2,7 +2,7 @@ import { canonicalCacheKey, getSite, htmlResponse, verifySession, withCacheHit }
 import { pages, assets } from "./entries.js";
 import { login } from "./api/login.js";
 import { checkAuth, logout } from "./api/logout.js";
-import { createSite, deleteSite, getSites, updateSite } from "./api/sites.js";
+import { createSite, deleteSite, getSiteDetail, getSites, updateSite } from "./api/sites.js";
 
 // 页面与内嵌资源的边缘缓存头：无 SSR 敏感数据（登录态在客户端判断），可短时缓存
 const PAGE_CACHE_CONTROL = "public, max-age=0, s-maxage=3600";
@@ -105,6 +105,10 @@ async function respondWithSite(site, pageName, request, env, waitUntil) {
 // KV 动态沙盒页：/<slug>（index 页）、/<slug>/<页名>
 async function siteResponse(slug, request, env, waitUntil) {
     const parts = slug.split("/");
+    // 沙盒只有两层：/<slug> 和 /<slug>/<页名>，更深路径一律 404
+    if (parts.length > 2) {
+        return null;
+    }
     const site = await getSite(env, parts[0]);
     if (!site) {
         return null;
@@ -130,6 +134,12 @@ async function handleApi(path, method, request, env, waitUntil) {
         }
     }
 
+    // 单站详情：含 html 与 pages 正文，供管理端编辑使用
+    if (method === "GET" && path.startsWith("/api/sites/")) {
+        const slug = path.slice("/api/sites/".length);
+        return getSiteDetail(request, env, slug);
+    }
+
     return null;
 }
 
@@ -145,7 +155,7 @@ export default {
         if (path === "/login" || path === "/login.html") return pageResponse(pages.login);
 
         // 内嵌静态资源：theme.css / common.js / favicon.svg
-        const asset = assets[path];
+        const asset = assets.get(path);
         if (asset) return assetResponse(asset);
 
         if (path.startsWith("/api/")) {

@@ -13,8 +13,9 @@ export const pages = {
     login: loginHtml
 };
 
-export const assets = {
-    "/assets/theme.css": { body: themeCss, contentType: "text/css; charset=utf-8" },
-    "/assets/common.js": { body: commonJs, contentType: "text/javascript; charset=utf-8" },
-    "/favicon.svg": { body: faviconSvg, contentType: "image/svg+xml" }
-};
+// 用 Map：普通对象会被 /__proto__ 这类路径命中 Object.prototype
+export const assets = new Map([
+    ["/assets/theme.css", { body: themeCss, contentType: "text/css; charset=utf-8" }],
+    ["/assets/common.js", { body: commonJs, contentType: "text/javascript; charset=utf-8" }],
+    ["/favicon.svg", { body: faviconSvg, contentType: "image/svg+xml" }]
+]);

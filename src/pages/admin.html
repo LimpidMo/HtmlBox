@@ -200,7 +200,6 @@
         // 确保删除弹窗默认隐藏
         document.getElementById('deleteModal').classList.add('hidden');
 
-        const token = localStorage.getItem('token');
         const content = document.getElementById('content');
         const authError = document.getElementById('authError');
         const addForm = document.getElementById('addForm');
@@ -223,20 +222,39 @@
         let deleteTargetSlug = null;
         let editingSlug = null;
 
+        // 鉴权走 HttpOnly Cookie，fetch 自动携带；未登录时跳登录页
+        async function apiFetch(url, options = {}) {
+            const res = await fetch(url, { credentials: 'same-origin', ...options });
+            if (res.status === 401) {
+                window.location.href = '/login.html?next=' + encodeURIComponent(location.pathname);
+                throw new Error('未登录');
+            }
+            return res;
+        }
+
         descriptionInput.addEventListener('input', function() {
             descCount.textContent = `(${this.value.length} / 20)`;
         });
 
-        if (!token) {
-            authError.classList.remove('hidden');
-        } else {
+        // 先验证登录态，再显示后台内容
+        (async function init() {
+            try {
+                const res = await fetch('/api/auth/logout', { credentials: 'same-origin' });
+                const data = await res.json();
+                if (!data.authenticated) {
+                    authError.classList.remove('hidden');
+                    return;
+                }
+            } catch (err) {
+                authError.classList.remove('hidden');
+                return;
+            }
             content.classList.remove('hidden');
             loadSites();
-        }
+        })();
 
         logoutBtn.addEventListener('click', async () => {
-            await fetch('/api/auth/logout', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-            localStorage.removeItem('token');
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
             window.location.href = '/';
         });
 
@@ -290,8 +308,7 @@
 
         async function loadSites() {
             try {
-                // 必须带 token：服务端按登录态过滤私有站，匿名请求拿不到私有列表
-                const res = await fetch('/api/sites', { headers: { 'Authorization': `Bearer ${token}` } });
+                const res = await apiFetch('/api/sites');
                 const data = await res.json();
                 const sites = data.sites || [];
 
@@ -351,9 +368,8 @@
         confirmDelete.addEventListener('click', async function() {
             if (!deleteTargetSlug) return;
             try {
-                const res = await fetch(`/api/sites?slug=${deleteTargetSlug}`, {
-                    method: 'DELETE',
-                    headers: { 'Authorization': `Bearer ${token}` }
+                const res = await apiFetch(`/api/sites?slug=${encodeURIComponent(deleteTargetSlug)}`, {
+                    method: 'DELETE'
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -377,11 +393,11 @@
 
         window.editSite = async function(slug) {
             try {
-                // 编辑私有站也要带 token，否则列表里找不到它
-                const res = await fetch('/api/sites', { headers: { 'Authorization': `Bearer ${token}` } });
+                // 列表只含元数据，编辑时另取含 html 的完整站点
+                const res = await apiFetch(`/api/sites/${encodeURIComponent(slug)}`);
                 if (!res.ok) throw new Error('API Error');
                 const data = await res.json();
-                const site = (data.sites || []).find(s => s.slug === slug);
+                const site = data.site;
                 if (!site) {
                     alert('未找到该网页');
                     return;
@@ -451,12 +467,9 @@
 
             try {
                 const method = editingSlug ? 'PUT' : 'POST';
-                const res = await fetch('/api/sites', {
+                const res = await apiFetch('/api/sites', {
                     method: method,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 

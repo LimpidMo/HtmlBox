@@ -82,9 +82,8 @@
             const filterBar = document.getElementById('filterBar');
 
             try {
-                // 已登录（后台常驻）带头请求，服务端才会返回私有站；访客匿名看到公开列表
-                const token = localStorage.getItem('token');
-                const res = await fetch('/api/sites', token ? { headers: { 'Authorization': `Bearer ${token}` } } : {});
+                // 鉴权走 HttpOnly Cookie：登录后服务端才返回私有站，访客匿名看到公开列表
+                const res = await fetch('/api/sites', { credentials: 'same-origin' });
                 const data = await res.json();
                 allSites = data.sites || [];
 

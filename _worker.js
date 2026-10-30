@@ -5,6 +5,11 @@ var PAGE_NAME_PATTERN = /^[a-z0-9._-]+$/;
 var MAX_TAG_LENGTH = 16;
 var MAX_TAGS = 10;
 var MAX_DESCRIPTION_LENGTH = 20;
+var MAX_PAGES = 20;
+var MAX_PAGE_BYTES = 1e6;
+var MAX_TOTAL_BYTES = 5e6;
+var LOGIN_WINDOW_MS = 5 * 60 * 1e3;
+var LOGIN_MAX_FAILURES = 10;
 var RESERVED_SLUGS = ["admin", "login", "index", "api", "assets"];
 function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -143,6 +148,80 @@ async function getSite(env, slug) {
 async function saveSite(env, site) {
   await env.KV.put(`site:${site.slug}`, JSON.stringify(site));
 }
+async function deleteSiteRecord(env, slug) {
+  await env.KV.delete(`site:${slug}`);
+}
+function siteMeta(site) {
+  return {
+    slug: site.slug,
+    title: site.title,
+    tags: site.tags || "",
+    description: site.description || "",
+    visibility: site.visibility === "private" ? "private" : "public",
+    isMultiPage: !!site.pages,
+    pageNames: pageNamesOf(site),
+    createdAt: site.createdAt,
+    updatedAt: site.updatedAt
+  };
+}
+var SITE_META_KEY = "site:meta";
+async function loadSiteMetas(env) {
+  const snapshot = parseJson(await env.KV.get(SITE_META_KEY));
+  const map = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const list = await getSiteList(env);
+  let dirty = false;
+  for (const slug of Object.keys(map)) {
+    if (!list.includes(slug)) {
+      delete map[slug];
+      dirty = true;
+    }
+  }
+  const missing = list.filter((slug) => !map[slug]);
+  if (missing.length > 0) {
+    const sites = await Promise.all(missing.map((slug) => getSite(env, slug)));
+    for (const site of sites) {
+      if (site) map[site.slug] = siteMeta(site);
+    }
+    dirty = true;
+  }
+  if (dirty) {
+    await env.KV.put(SITE_META_KEY, JSON.stringify(map));
+  }
+  return list.map((slug) => map[slug]).filter(Boolean);
+}
+async function saveSiteMeta(env, site) {
+  const snapshot = parseJson(await env.KV.get(SITE_META_KEY));
+  const map = snapshot && typeof snapshot === "object" ? snapshot : {};
+  map[site.slug] = siteMeta(site);
+  await env.KV.put(SITE_META_KEY, JSON.stringify(map));
+}
+async function removeSiteMeta(env, slug) {
+  const snapshot = parseJson(await env.KV.get(SITE_META_KEY));
+  if (!snapshot || typeof snapshot !== "object") return;
+  delete snapshot[slug];
+  await env.KV.put(SITE_META_KEY, JSON.stringify(snapshot));
+}
+function loginFailKey(ip) {
+  return `auth:loginfail:${ip}`;
+}
+async function readLoginFailures(env, ip) {
+  if (!ip) return { blocked: false, record: null };
+  const record = parseJson(await env.KV.get(loginFailKey(ip)));
+  const inWindow = record && record.count && Date.now() - record.since <= LOGIN_WINDOW_MS ? record : null;
+  return { blocked: inWindow ? inWindow.count >= LOGIN_MAX_FAILURES : false, record: inWindow };
+}
+async function recordLoginFailure(env, ip, previous) {
+  if (!ip) return;
+  const count = previous ? previous.count + 1 : 1;
+  await env.KV.put(loginFailKey(ip), JSON.stringify({
+    count,
+    since: previous ? previous.since : Date.now()
+  }), { expirationTtl: Math.ceil(LOGIN_WINDOW_MS / 1e3) });
+}
+async function clearLoginFailures(env, ip) {
+  if (!ip) return;
+  await env.KV.delete(loginFailKey(ip));
+}
 function canonicalCacheKey(request, path) {
   const url = new URL(request.url);
   if (path) url.pathname = path;
@@ -166,8 +245,8 @@ async function safeDelete(key) {
 async function purgeApiSitesCache(request) {
   await safeDelete(canonicalCacheKey(request, "/api/sites"));
 }
-async function purgePageCache(request, slug, subSlugs = []) {
-  const paths = [`/${slug}`, `/${slug}/`, ...subSlugs.filter(Boolean).map((s) => `/${slug}/${s}`)];
+async function purgePageCache(request, slug, pageNames = []) {
+  const paths = [`/${slug}`, `/${slug}/`, ...pageNames.filter(Boolean).map((name) => `/${slug}/${name}`)];
   await Promise.all(paths.map((p) => safeDelete(canonicalCacheKey(request, p))));
 }
 function pageNamesOf(site) {
@@ -259,9 +338,8 @@ var pages_default = `<!DOCTYPE html>
             const filterBar = document.getElementById('filterBar');
 
             try {
-                // 已登录（后台常驻）带头请求，服务端才会返回私有站；访客匿名看到公开列表
-                const token = localStorage.getItem('token');
-                const res = await fetch('/api/sites', token ? { headers: { 'Authorization': \`Bearer \${token}\` } } : {});
+                // 鉴权走 HttpOnly Cookie：登录后服务端才返回私有站，访客匿名看到公开列表
+                const res = await fetch('/api/sites', { credentials: 'same-origin' });
                 const data = await res.json();
                 allSites = data.sites || [];
 
@@ -554,7 +632,6 @@ var admin_default = `<!DOCTYPE html>
         // 确保删除弹窗默认隐藏
         document.getElementById('deleteModal').classList.add('hidden');
 
-        const token = localStorage.getItem('token');
         const content = document.getElementById('content');
         const authError = document.getElementById('authError');
         const addForm = document.getElementById('addForm');
@@ -577,20 +654,39 @@ var admin_default = `<!DOCTYPE html>
         let deleteTargetSlug = null;
         let editingSlug = null;
 
+        // 鉴权走 HttpOnly Cookie，fetch 自动携带；未登录时跳登录页
+        async function apiFetch(url, options = {}) {
+            const res = await fetch(url, { credentials: 'same-origin', ...options });
+            if (res.status === 401) {
+                window.location.href = '/login.html?next=' + encodeURIComponent(location.pathname);
+                throw new Error('未登录');
+            }
+            return res;
+        }
+
         descriptionInput.addEventListener('input', function() {
             descCount.textContent = \`(\${this.value.length} / 20)\`;
         });
 
-        if (!token) {
-            authError.classList.remove('hidden');
-        } else {
+        // 先验证登录态，再显示后台内容
+        (async function init() {
+            try {
+                const res = await fetch('/api/auth/logout', { credentials: 'same-origin' });
+                const data = await res.json();
+                if (!data.authenticated) {
+                    authError.classList.remove('hidden');
+                    return;
+                }
+            } catch (err) {
+                authError.classList.remove('hidden');
+                return;
+            }
             content.classList.remove('hidden');
             loadSites();
-        }
+        })();
 
         logoutBtn.addEventListener('click', async () => {
-            await fetch('/api/auth/logout', { method: 'POST', headers: { 'Authorization': \`Bearer \${token}\` } });
-            localStorage.removeItem('token');
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
             window.location.href = '/';
         });
 
@@ -644,8 +740,7 @@ var admin_default = `<!DOCTYPE html>
 
         async function loadSites() {
             try {
-                // 必须带 token：服务端按登录态过滤私有站，匿名请求拿不到私有列表
-                const res = await fetch('/api/sites', { headers: { 'Authorization': \`Bearer \${token}\` } });
+                const res = await apiFetch('/api/sites');
                 const data = await res.json();
                 const sites = data.sites || [];
 
@@ -705,9 +800,8 @@ var admin_default = `<!DOCTYPE html>
         confirmDelete.addEventListener('click', async function() {
             if (!deleteTargetSlug) return;
             try {
-                const res = await fetch(\`/api/sites?slug=\${deleteTargetSlug}\`, {
-                    method: 'DELETE',
-                    headers: { 'Authorization': \`Bearer \${token}\` }
+                const res = await apiFetch(\`/api/sites?slug=\${encodeURIComponent(deleteTargetSlug)}\`, {
+                    method: 'DELETE'
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -731,11 +825,11 @@ var admin_default = `<!DOCTYPE html>
 
         window.editSite = async function(slug) {
             try {
-                // 编辑私有站也要带 token，否则列表里找不到它
-                const res = await fetch('/api/sites', { headers: { 'Authorization': \`Bearer \${token}\` } });
+                // 列表只含元数据，编辑时另取含 html 的完整站点
+                const res = await apiFetch(\`/api/sites/\${encodeURIComponent(slug)}\`);
                 if (!res.ok) throw new Error('API Error');
                 const data = await res.json();
-                const site = (data.sites || []).find(s => s.slug === slug);
+                const site = data.site;
                 if (!site) {
                     alert('未找到该网页');
                     return;
@@ -805,12 +899,9 @@ var admin_default = `<!DOCTYPE html>
 
             try {
                 const method = editingSlug ? 'PUT' : 'POST';
-                const res = await fetch('/api/sites', {
+                const res = await apiFetch('/api/sites', {
                     method: method,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': \`Bearer \${token}\`
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
@@ -979,8 +1070,7 @@ var login_default = `<!DOCTYPE html>\r
                 const data = await res.json();\r
 \r
                 if (data.success) {\r
-                    localStorage.setItem('token', data.token);\r
-                    // 跳回来源页（?next=），仅接受站内相对路径防开放重定向\r
+                    // 凭据在 HttpOnly Cookie 里，前端不保存 token\r
                     const next = new URLSearchParams(location.search).get('next');\r
                     window.location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/admin.html';\r
                 } else {\r
@@ -1055,16 +1145,25 @@ var pages = {
   admin: admin_default,
   login: login_default
 };
-var assets = {
-  "/assets/theme.css": { body: theme_default, contentType: "text/css; charset=utf-8" },
-  "/assets/common.js": { body: common_default, contentType: "text/javascript; charset=utf-8" },
-  "/favicon.svg": { body: favicon_default, contentType: "image/svg+xml" }
-};
+var assets = /* @__PURE__ */ new Map([
+  ["/assets/theme.css", { body: theme_default, contentType: "text/css; charset=utf-8" }],
+  ["/assets/common.js", { body: common_default, contentType: "text/javascript; charset=utf-8" }],
+  ["/favicon.svg", { body: favicon_default, contentType: "image/svg+xml" }]
+]);
 
 // src/api/login.js
+function clientIp(request) {
+  const header = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
+  return header.split(",")[0].trim();
+}
 async function login(request, env) {
   if (!env.ADMIN_PASSWORD) {
     return jsonResponse({ error: "服务器未配置管理员密码" }, 500);
+  }
+  const ip = clientIp(request);
+  const failures = await readLoginFailures(env, ip);
+  if (failures.blocked) {
+    return jsonResponse({ error: "尝试次数过多，请稍后再试" }, 429);
   }
   const body = await readJson(request);
   if (!body) {
@@ -1075,14 +1174,15 @@ async function login(request, env) {
     return jsonResponse({ error: "请输入密码" }, 400);
   }
   if (!timingSafeEqual(password, env.ADMIN_PASSWORD)) {
+    await recordLoginFailure(env, ip, failures.record);
     return jsonResponse({ error: "密码错误" }, 401);
   }
+  await clearLoginFailures(env, ip);
   const session = await issueSession(env);
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   const cookie = `session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1e3}${secure}`;
   return jsonResponse({
     success: true,
-    token: session.token,
     expiresAt: session.expiresAt
   }, 200, { "Set-Cookie": cookie });
 }
@@ -1111,11 +1211,11 @@ var CACHE_MAX_AGE = 86400;
 function validateMeta(body) {
   const tags = normalizeTags(body.tags);
   if (tags.error) {
-    return { error: jsonResponse({ error: tags.error }, 400) };
+    return jsonResponse({ error: tags.error }, 400);
   }
   const description = normalizeDescription(body.description);
   if (description.error) {
-    return { error: jsonResponse({ error: description.error }, 400) };
+    return jsonResponse({ error: description.error }, 400);
   }
   return { tags: tags.tags, description: description.description };
 }
@@ -1135,21 +1235,41 @@ function buildSite(body, createdAt, meta) {
     updatedAt: Date.now()
   };
 }
-async function validatePageNames(pageNames) {
+function validatePageNames(pageNames) {
   const seen = /* @__PURE__ */ new Set();
   for (const name of pageNames) {
     if (!name) {
-      return { error: jsonResponse({ error: "每个页面都要填页面名，首个页面即沙盒入口" }, 400) };
+      return jsonResponse({ error: "每个页面都要填页面名，首个页面即沙盒入口" }, 400);
     }
     if (!isValidPageName(name)) {
-      return { error: jsonResponse({ error: `页面名「${name}」只能包含小写字母、数字、连字符、下划线和点` }, 400) };
+      return jsonResponse({ error: `页面名「${name}」只能包含小写字母、数字、连字符、下划线和点` }, 400);
     }
     if (seen.has(name)) {
-      return { error: jsonResponse({ error: `页面名「${name}」重复` }, 400) };
+      return jsonResponse({ error: `页面名「${name}」重复` }, 400);
     }
     seen.add(name);
   }
   return null;
+}
+function validateContent(pages2) {
+  if (pages2.length > MAX_PAGES) {
+    return jsonResponse({ error: `页面数最多 ${MAX_PAGES} 个，当前 ${pages2.length} 个` }, 400);
+  }
+  let totalBytes = 0;
+  for (const page of pages2) {
+    const size = new TextEncoder().encode(page.html || "").length;
+    if (size > MAX_PAGE_BYTES) {
+      return jsonResponse({ error: `页面「${page.name}」超过 ${formatMb(MAX_PAGE_BYTES)} 限制` }, 400);
+    }
+    totalBytes += size;
+  }
+  if (totalBytes > MAX_TOTAL_BYTES) {
+    return jsonResponse({ error: `总内容超过 ${formatMb(MAX_TOTAL_BYTES)} 限制` }, 400);
+  }
+  return null;
+}
+function formatMb(bytes) {
+  return `${Math.round(bytes / 1024 / 1024)}MB`;
 }
 async function requireAuth(request, env) {
   if (!await verifySession(request, env)) {
@@ -1160,20 +1280,34 @@ async function requireAuth(request, env) {
 async function readSiteBody(request) {
   const body = await readJson(request);
   if (!body) {
-    return { error: jsonResponse({ error: "无效的请求体" }, 400) };
+    return jsonResponse({ error: "无效的请求体" }, 400);
   }
   const { slug, title, html } = body;
   if (!slug || !title || !html) {
-    return { error: jsonResponse({ error: "缺少必要字段: slug, title, html" }, 400) };
+    return jsonResponse({ error: "缺少必要字段: slug, title, html" }, 400);
   }
   const cleanSlugValue = cleanSlug(slug);
   if (!isValidSlug(cleanSlugValue)) {
-    return { error: jsonResponse({ error: "slug 只能包含小写字母、数字和连字符" }, 400) };
+    return jsonResponse({ error: "slug 只能包含小写字母、数字和连字符" }, 400);
   }
   if (isReservedSlug(cleanSlugValue)) {
-    return { error: jsonResponse({ error: "该 slug 是保留路径，请换一个" }, 400) };
+    return jsonResponse({ error: "该 slug 是保留路径，请换一个" }, 400);
   }
   return { body, slug: cleanSlugValue };
+}
+function contentPagesOf(body, slug) {
+  const pages2 = body.pages || [];
+  return pages2.length ? pages2 : [{ name: slug, html: body.html }];
+}
+async function validateSiteInput(request) {
+  const parsed = await readSiteBody(request);
+  if (parsed instanceof Response) return parsed;
+  const pages2 = parsed.body.pages || [];
+  const invalid = (pages2.length ? validatePageNames(pages2.map((p) => p.name ?? "")) : null) || validateContent(contentPagesOf(parsed.body, parsed.slug));
+  if (invalid) return invalid;
+  const meta = validateMeta(parsed.body);
+  if (meta instanceof Response) return meta;
+  return { slug: parsed.slug, body: parsed.body, meta };
 }
 async function getSites(request, env, waitUntil) {
   const cacheKey = canonicalCacheKey(request);
@@ -1188,8 +1322,7 @@ async function getSites(request, env, waitUntil) {
       console.log("Cache not available:", e.message);
     }
   }
-  const list = await getSiteList(env);
-  const allSites = (await Promise.all(list.map((slug) => getSite(env, slug)))).filter(Boolean);
+  const allSites = await loadSiteMetas(env);
   const sites = session ? allSites : allSites.filter((s) => s.visibility !== "private");
   const response = jsonResponse({ sites }, 200, {
     "Cache-Control": `public, max-age=0, s-maxage=${CACHE_MAX_AGE}`
@@ -1205,25 +1338,34 @@ async function getSites(request, env, waitUntil) {
   }
   return response;
 }
+async function getSiteDetail(request, env, slug) {
+  const authError = await requireAuth(request, env);
+  if (authError) return authError;
+  if (!slug || !isValidSlug(slug)) {
+    return jsonResponse({ error: "slug 不合法" }, 400);
+  }
+  const site = await getSite(env, slug);
+  if (!site) {
+    return jsonResponse({ error: "网站不存在" }, 404);
+  }
+  return jsonResponse({ site }, 200, { "Cache-Control": "no-store" });
+}
 async function createSite(request, env) {
   const authError = await requireAuth(request, env);
   if (authError) return authError;
-  const { error, body, slug } = await readSiteBody(request);
-  if (error) return error;
-  if (await getSite(env, slug)) {
+  const input = await validateSiteInput(request);
+  if (input instanceof Response) return input;
+  if (await getSite(env, input.slug)) {
     return jsonResponse({ error: "该 slug 已存在" }, 409);
   }
-  const nameError = await validatePageNames((body.pages || []).map((p) => p.name ?? ""));
-  if (nameError) return nameError.error;
-  const meta = validateMeta(body);
-  if (meta.error) return meta.error;
-  const site = buildSite(body, Date.now(), meta);
+  const site = buildSite(input.body, Date.now(), input.meta);
   const list = await getSiteList(env);
   if (!list.includes(site.slug)) {
     list.push(site.slug);
     await saveSiteList(env, list);
   }
   await saveSite(env, site);
+  await saveSiteMeta(env, site);
   await purgeApiSitesCache(request);
   await purgePageCache(request, site.slug, pageNamesOf(site));
   return jsonResponse({ success: true, site });
@@ -1231,20 +1373,18 @@ async function createSite(request, env) {
 async function updateSite(request, env) {
   const authError = await requireAuth(request, env);
   if (authError) return authError;
-  const { error, body, slug } = await readSiteBody(request);
-  if (error) return error;
-  const existing = await getSite(env, slug);
+  const input = await validateSiteInput(request);
+  if (input instanceof Response) return input;
+  const existing = await getSite(env, input.slug);
   if (!existing) {
     return jsonResponse({ error: "网站不存在" }, 404);
   }
-  const nameError = await validatePageNames((body.pages || []).map((p) => p.name ?? ""));
-  if (nameError) return nameError.error;
-  const meta = validateMeta(body);
-  if (meta.error) return meta.error;
-  const site = buildSite(body, existing.createdAt, meta);
+  const site = buildSite(input.body, existing.createdAt, input.meta);
   await saveSite(env, site);
+  await saveSiteMeta(env, site);
   await purgeApiSitesCache(request);
-  await purgePageCache(request, site.slug, pageNamesOf(site));
+  const pageNames = [.../* @__PURE__ */ new Set([...pageNamesOf(existing), ...pageNamesOf(site)])];
+  await purgePageCache(request, site.slug, pageNames);
   return jsonResponse({ success: true, site });
 }
 async function deleteSite(request, env) {
@@ -1260,7 +1400,8 @@ async function deleteSite(request, env) {
   }
   const existing = await getSite(env, slug);
   await saveSiteList(env, list.filter((s) => s !== slug));
-  await env.KV.delete(`site:${slug}`);
+  await deleteSiteRecord(env, slug);
+  await removeSiteMeta(env, slug);
   await purgeApiSitesCache(request);
   await purgePageCache(request, slug, pageNamesOf(existing));
   return jsonResponse({ success: true });
@@ -1345,6 +1486,9 @@ async function respondWithSite(site, pageName, request, env, waitUntil) {
 }
 async function siteResponse(slug, request, env, waitUntil) {
   const parts = slug.split("/");
+  if (parts.length > 2) {
+    return null;
+  }
   const site = await getSite(env, parts[0]);
   if (!site) {
     return null;
@@ -1370,6 +1514,10 @@ async function handleApi(path, method, request, env, waitUntil) {
         return deleteSite(request, env);
     }
   }
+  if (method === "GET" && path.startsWith("/api/sites/")) {
+    const slug = path.slice("/api/sites/".length);
+    return getSiteDetail(request, env, slug);
+  }
   return null;
 }
 var worker_default = {
@@ -1380,7 +1528,7 @@ var worker_default = {
     if (path === "/" || path === "/index" || path === "/index.html") return pageResponse(pages.index);
     if (path === "/admin" || path === "/admin.html") return pageResponse(pages.admin);
     if (path === "/login" || path === "/login.html") return pageResponse(pages.login);
-    const asset = assets[path];
+    const asset = assets.get(path);
     if (asset) return assetResponse(asset);
     if (path.startsWith("/api/")) {
       const apiResponse = await handleApi(path, method, request, env, ctx.waitUntil.bind(ctx));

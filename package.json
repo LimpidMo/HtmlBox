@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "npm run build && wrangler dev --port 8888",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "test:browser": "node test/browser-check.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"

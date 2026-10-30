@@ -11,3 +11,9 @@ wrangler.toml
 node_modules
 docs
 AGENTS.md
+
+# 测试产物
+shots/
+
+# 单页面 Html 样例
+ExampleHtml/

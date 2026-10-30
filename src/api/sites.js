@@ -1,20 +1,27 @@
 import {
     canonicalCacheKey,
     cleanSlug,
+    deleteSiteRecord,
     getSite,
     getSiteList,
     isReservedSlug,
-    isValidSlug,
     isValidPageName,
+    isValidSlug,
+    jsonResponse,
+    loadSiteMetas,
+    MAX_PAGES,
+    MAX_PAGE_BYTES,
+    MAX_TOTAL_BYTES,
     normalizeDescription,
     normalizeTags,
-    jsonResponse,
+    pageNamesOf,
     purgeApiSitesCache,
     purgePageCache,
     readJson,
+    removeSiteMeta,
     saveSite,
     saveSiteList,
-    pageNamesOf,
+    saveSiteMeta,
     verifySession,
     withCacheHit
 } from "../common.js";
@@ -22,15 +29,17 @@ import {
 // max-age=0：浏览器每次回源（避免管理端看到旧列表）；s-maxage：CDN 边缘缓存
 const CACHE_MAX_AGE = 86400;
 
-// 校验标签与描述，非法返回 {error}；通过返回可用于 buildSite 的字段
+// 校验器统一约定：非法返回 Response（可直接作响应体），合法返回 null 或数据
+
+// 校验标签与描述，通过时返回可写入站点的字段
 function validateMeta(body) {
     const tags = normalizeTags(body.tags);
     if (tags.error) {
-        return { error: jsonResponse({ error: tags.error }, 400) };
+        return jsonResponse({ error: tags.error }, 400);
     }
     const description = normalizeDescription(body.description);
     if (description.error) {
-        return { error: jsonResponse({ error: description.error }, 400) };
+        return jsonResponse({ error: description.error }, 400);
     }
     return { tags: tags.tags, description: description.description };
 }
@@ -53,21 +62,44 @@ function buildSite(body, createdAt, meta) {
 }
 
 // 页名只在沙盒内生效（不做跨站唯一）：必须命名（首条即入口）、字符集合法、组内不重复
-async function validatePageNames(pageNames) {
+function validatePageNames(pageNames) {
     const seen = new Set();
     for (const name of pageNames) {
         if (!name) {
-            return { error: jsonResponse({ error: "每个页面都要填页面名，首个页面即沙盒入口" }, 400) };
+            return jsonResponse({ error: "每个页面都要填页面名，首个页面即沙盒入口" }, 400);
         }
         if (!isValidPageName(name)) {
-            return { error: jsonResponse({ error: `页面名「${name}」只能包含小写字母、数字、连字符、下划线和点` }, 400) };
+            return jsonResponse({ error: `页面名「${name}」只能包含小写字母、数字、连字符、下划线和点` }, 400);
         }
         if (seen.has(name)) {
-            return { error: jsonResponse({ error: `页面名「${name}」重复` }, 400) };
+            return jsonResponse({ error: `页面名「${name}」重复` }, 400);
         }
         seen.add(name);
     }
     return null;
+}
+
+// 体积上限（KV 单值上限 25MB，留足余量）
+function validateContent(pages) {
+    if (pages.length > MAX_PAGES) {
+        return jsonResponse({ error: `页面数最多 ${MAX_PAGES} 个，当前 ${pages.length} 个` }, 400);
+    }
+    let totalBytes = 0;
+    for (const page of pages) {
+        const size = new TextEncoder().encode(page.html || "").length;
+        if (size > MAX_PAGE_BYTES) {
+            return jsonResponse({ error: `页面「${page.name}」超过 ${formatMb(MAX_PAGE_BYTES)} 限制` }, 400);
+        }
+        totalBytes += size;
+    }
+    if (totalBytes > MAX_TOTAL_BYTES) {
+        return jsonResponse({ error: `总内容超过 ${formatMb(MAX_TOTAL_BYTES)} 限制` }, 400);
+    }
+    return null;
+}
+
+function formatMb(bytes) {
+    return `${Math.round(bytes / 1024 / 1024)}MB`;
 }
 
 async function requireAuth(request, env) {
@@ -80,24 +112,47 @@ async function requireAuth(request, env) {
 async function readSiteBody(request) {
     const body = await readJson(request);
     if (!body) {
-        return { error: jsonResponse({ error: "无效的请求体" }, 400) };
+        return jsonResponse({ error: "无效的请求体" }, 400);
     }
 
     const { slug, title, html } = body;
     if (!slug || !title || !html) {
-        return { error: jsonResponse({ error: "缺少必要字段: slug, title, html" }, 400) };
+        return jsonResponse({ error: "缺少必要字段: slug, title, html" }, 400);
     }
 
     const cleanSlugValue = cleanSlug(slug);
     if (!isValidSlug(cleanSlugValue)) {
-        return { error: jsonResponse({ error: "slug 只能包含小写字母、数字和连字符" }, 400) };
+        return jsonResponse({ error: "slug 只能包含小写字母、数字和连字符" }, 400);
     }
 
     if (isReservedSlug(cleanSlugValue)) {
-        return { error: jsonResponse({ error: "该 slug 是保留路径，请换一个" }, 400) };
+        return jsonResponse({ error: "该 slug 是保留路径，请换一个" }, 400);
     }
 
     return { body, slug: cleanSlugValue };
+}
+
+// 单页站造一条仅用于体积校验，页名用清洗后的 slug（原始 slug 可能带斜杠）
+function contentPagesOf(body, slug) {
+    const pages = body.pages || [];
+    return pages.length ? pages : [{ name: slug, html: body.html }];
+}
+
+// 创建与更新共用的输入校验：非法返回 Response，合法返回可直接落库的数据
+async function validateSiteInput(request) {
+    const parsed = await readSiteBody(request);
+    if (parsed instanceof Response) return parsed;
+
+    const pages = parsed.body.pages || [];
+    // 页名只对多页站有意义：单页站没有页名概念，别把 slug 当页名校验
+    const invalid = (pages.length ? validatePageNames(pages.map(p => p.name ?? "")) : null)
+        || validateContent(contentPagesOf(parsed.body, parsed.slug));
+    if (invalid) return invalid;
+
+    const meta = validateMeta(parsed.body);
+    if (meta instanceof Response) return meta;
+
+    return { slug: parsed.slug, body: parsed.body, meta };
 }
 
 export async function getSites(request, env, waitUntil) {
@@ -116,8 +171,8 @@ export async function getSites(request, env, waitUntil) {
         }
     }
 
-    const list = await getSiteList(env);
-    const allSites = (await Promise.all(list.map(slug => getSite(env, slug)))).filter(Boolean);
+    // 只取元数据快照：一次 KV 读，且响应不含 html 正文
+    const allSites = await loadSiteMetas(env);
     // 未登录不含私有站
     const sites = session ? allSites : allSites.filter(s => s.visibility !== "private");
 
@@ -138,24 +193,35 @@ export async function getSites(request, env, waitUntil) {
     return response;
 }
 
+// 单站详情：含 html 与 pages 正文，仅管理员可读（编辑时用）
+export async function getSiteDetail(request, env, slug) {
+    const authError = await requireAuth(request, env);
+    if (authError) return authError;
+
+    if (!slug || !isValidSlug(slug)) {
+        return jsonResponse({ error: "slug 不合法" }, 400);
+    }
+
+    const site = await getSite(env, slug);
+    if (!site) {
+        return jsonResponse({ error: "网站不存在" }, 404);
+    }
+
+    return jsonResponse({ site }, 200, { "Cache-Control": "no-store" });
+}
+
 export async function createSite(request, env) {
     const authError = await requireAuth(request, env);
     if (authError) return authError;
 
-    const { error, body, slug } = await readSiteBody(request);
-    if (error) return error;
+    const input = await validateSiteInput(request);
+    if (input instanceof Response) return input;
 
-    if (await getSite(env, slug)) {
+    if (await getSite(env, input.slug)) {
         return jsonResponse({ error: "该 slug 已存在" }, 409);
     }
 
-    const nameError = await validatePageNames((body.pages || []).map(p => p.name ?? ""));
-    if (nameError) return nameError.error;
-
-    const meta = validateMeta(body);
-    if (meta.error) return meta.error;
-
-    const site = buildSite(body, Date.now(), meta);
+    const site = buildSite(input.body, Date.now(), input.meta);
 
     const list = await getSiteList(env);
     if (!list.includes(site.slug)) {
@@ -164,6 +230,7 @@ export async function createSite(request, env) {
     }
 
     await saveSite(env, site);
+    await saveSiteMeta(env, site);
     await purgeApiSitesCache(request);
     await purgePageCache(request, site.slug, pageNamesOf(site));
 
@@ -174,25 +241,22 @@ export async function updateSite(request, env) {
     const authError = await requireAuth(request, env);
     if (authError) return authError;
 
-    const { error, body, slug } = await readSiteBody(request);
-    if (error) return error;
+    const input = await validateSiteInput(request);
+    if (input instanceof Response) return input;
 
-    const existing = await getSite(env, slug);
+    const existing = await getSite(env, input.slug);
     if (!existing) {
         return jsonResponse({ error: "网站不存在" }, 404);
     }
 
-    const nameError = await validatePageNames((body.pages || []).map(p => p.name ?? ""));
-    if (nameError) return nameError.error;
-
-    const meta = validateMeta(body);
-    if (meta.error) return meta.error;
-
-    const site = buildSite(body, existing.createdAt, meta);
+    const site = buildSite(input.body, existing.createdAt, input.meta);
 
     await saveSite(env, site);
+    await saveSiteMeta(env, site);
     await purgeApiSitesCache(request);
-    await purgePageCache(request, site.slug, pageNamesOf(site));
+    // 旧页名 ∪ 新页名：删掉的页面其缓存条目也必须清掉，否则旧页面仍可访问
+    const pageNames = [...new Set([...pageNamesOf(existing), ...pageNamesOf(site)])];
+    await purgePageCache(request, site.slug, pageNames);
 
     return jsonResponse({ success: true, site });
 }
@@ -214,7 +278,8 @@ export async function deleteSite(request, env) {
     const existing = await getSite(env, slug);
 
     await saveSiteList(env, list.filter(s => s !== slug));
-    await env.KV.delete(`site:${slug}`);
+    await deleteSiteRecord(env, slug);
+    await removeSiteMeta(env, slug);
     await purgeApiSitesCache(request);
     await purgePageCache(request, slug, pageNamesOf(existing));
 

@@ -130,8 +130,7 @@
                 const data = await res.json();
 
                 if (data.success) {
-                    localStorage.setItem('token', data.token);
-                    // 跳回来源页（?next=），仅接受站内相对路径防开放重定向
+                    // 凭据在 HttpOnly Cookie 里，前端不保存 token
                     const next = new URLSearchParams(location.search).get('next');
                     window.location.href = next && next.startsWith('/') && !next.startsWith('//') ? next : '/admin.html';
                 } else {
