@@ -193,6 +193,20 @@ export async function getSites(request, env, waitUntil) {
     return response;
 }
 
+// 全站备份导出：完整站点对象（含 html），仅管理员可读，不进 Cache API
+export async function exportSites(request, env) {
+    const authError = await requireAuth(request, env);
+    if (authError) return authError;
+
+    const list = await getSiteList(env);
+    const sites = (await Promise.all(list.map(slug => getSite(env, slug)))).filter(Boolean);
+
+    return jsonResponse({ exportedAt: Date.now(), sites }, 200, {
+        "Cache-Control": "no-store",
+        "Content-Disposition": 'attachment; filename="htmlbox-backup.json"'
+    });
+}
+
 // 单站详情：含 html 与 pages 正文，仅管理员可读（编辑时用）
 export async function getSiteDetail(request, env, slug) {
     const authError = await requireAuth(request, env);

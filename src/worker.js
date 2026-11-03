@@ -2,7 +2,7 @@ import { canonicalCacheKey, getSite, htmlResponse, verifySession, withCacheHit }
 import { pages, assets } from "./entries.js";
 import { login } from "./api/login.js";
 import { checkAuth, logout } from "./api/logout.js";
-import { createSite, deleteSite, getSiteDetail, getSites, updateSite } from "./api/sites.js";
+import { createSite, deleteSite, exportSites, getSiteDetail, getSites, updateSite } from "./api/sites.js";
 
 // 页面与内嵌资源的边缘缓存头：无 SSR 敏感数据（登录态在客户端判断），可短时缓存
 const PAGE_CACHE_CONTROL = "public, max-age=0, s-maxage=3600";
@@ -132,6 +132,11 @@ async function handleApi(path, method, request, env, waitUntil) {
             case "PUT": return updateSite(request, env);
             case "DELETE": return deleteSite(request, env);
         }
+    }
+
+    // 全站备份导出：必须在详情分支之前，否则会被当成 slug=export
+    if (method === "GET" && path === "/api/sites/export") {
+        return exportSites(request, env);
     }
 
     // 单站详情：含 html 与 pages 正文，供管理端编辑使用

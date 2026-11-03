@@ -23,6 +23,13 @@
         @keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
         .tag { background: var(--border-color); color: var(--text-secondary); }
         .tag.active { background: var(--color-accent); color: white; }
+        .input-field {
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            outline: none;
+        }
+        .input-field:focus { border-color: var(--color-accent); }
     </style>
 </head>
 <body>
@@ -47,7 +54,18 @@
                 </button>
             </div>
         </div>
-        <div id="filterBar" class="hidden max-w-6xl mx-auto mt-6 flex justify-end gap-2"></div>
+        <div id="toolbar" class="hidden max-w-6xl mx-auto mt-6">
+            <div class="flex flex-wrap items-center gap-3">
+                <input type="search" id="searchInput" placeholder="搜索标题、标签、路径…" class="input-field flex-1 min-w-[200px] px-3 py-2 font-mono text-xs">
+                <select id="sortSelect" class="input-field px-3 py-2 font-mono text-xs">
+                    <option value="updated">最近更新</option>
+                    <option value="created">最近添加</option>
+                    <option value="title">标题排序</option>
+                </select>
+                <span id="resultCount" class="font-mono text-xs" style="color: var(--text-secondary);"></span>
+            </div>
+            <div id="filterBar" class="hidden mt-4 flex flex-wrap justify-end gap-2"></div>
+        </div>
     </header>
 
     <main class="max-w-6xl mx-auto px-6 py-16">
@@ -72,13 +90,46 @@
     <script>
         let allSites = [];
         let activeTag = null;
+        let searchTerm = '';
+        let sortMode = 'updated';
         // 私有筛选项的哨兵值：带前导冒号，不会与用户标签名冲突
         const PRIVATE_FILTER = ':private';
+
+        const searchInput = document.getElementById('searchInput');
+        const sortSelect = document.getElementById('sortSelect');
+        const resultCount = document.getElementById('resultCount');
+
+        // 卡片日期：缺失时间戳返回空串，不显示该段
+        function formatDate(ts) {
+            if (!ts) return '';
+            const d = new Date(ts);
+            const pad = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
+
+        function sortSites(list) {
+            const sorted = list.slice();
+            if (sortMode === 'title') {
+                sorted.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh-CN'));
+            } else if (sortMode === 'created') {
+                sorted.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            } else {
+                sorted.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+            }
+            return sorted;
+        }
+
+        function matchesSearch(site, term) {
+            if (!term) return true;
+            const haystack = [site.title, site.description, site.tags, site.slug]
+                .filter(Boolean).join(' ').toLowerCase();
+            return haystack.includes(term);
+        }
 
         async function loadSites() {
             const loading = document.getElementById('loading');
             const empty = document.getElementById('empty');
-            const sitesEl = document.getElementById('sites');
+            const toolbar = document.getElementById('toolbar');
             const filterBar = document.getElementById('filterBar');
 
             try {
@@ -93,6 +144,9 @@
                     empty.classList.remove('hidden');
                     return;
                 }
+
+                // 有站点才显示搜索/排序工具栏
+                toolbar.classList.remove('hidden');
 
                 const tags = new Set();
                 allSites.forEach(site => {
@@ -134,20 +188,38 @@
             const sitesEl = document.getElementById('sites');
             const empty = document.getElementById('empty');
 
-            const filtered = activeTag === PRIVATE_FILTER
-                ? allSites.filter(s => s.visibility === 'private')
-                : activeTag
-                    ? allSites.filter(s => s.tags && s.tags.split(',').map(t => t.trim()).includes(activeTag))
-                    : allSites;
+            const term = searchTerm.trim().toLowerCase();
+            const filtered = allSites.filter(site => {
+                if (activeTag === PRIVATE_FILTER) {
+                    if (site.visibility !== 'private') return false;
+                } else if (activeTag) {
+                    const tags = site.tags ? site.tags.split(',').map(t => t.trim()) : [];
+                    if (!tags.includes(activeTag)) return false;
+                }
+                return matchesSearch(site, term);
+            });
+
+            resultCount.textContent = filtered.length ? `${filtered.length} / ${allSites.length}` : '';
 
             if (filtered.length === 0) {
                 empty.classList.remove('hidden');
+                // 有站点但筛不出来时提示是筛选结果为空，不是全站为空
+                const noSites = allSites.length === 0;
+                empty.querySelector('p').textContent = noSites ? '暂无工具' : '没有匹配的网页';
+                empty.querySelector('a').classList.toggle('hidden', !noSites);
                 sitesEl.innerHTML = '';
                 return;
             }
 
             empty.classList.add('hidden');
-            sitesEl.innerHTML = filtered.map(site => `
+            sitesEl.innerHTML = sortSites(filtered).map(site => {
+                const pageCount = site.isMultiPage && site.pageNames ? site.pageNames.length : 0;
+                const updated = formatDate(site.updatedAt);
+                const meta = [
+                    pageCount ? `${pageCount} 页` : '',
+                    updated ? `更新 ${updated}` : ''
+                ].filter(Boolean).join(' · ');
+                return `
                 <a href="/${site.slug}" class="card block p-6 border fade-up" style="animation-fill-mode: both; background: var(--bg-card); border-color: var(--border-color);">
                     <div class="flex items-start justify-between mb-3">
                         <div class="flex items-center gap-2">
@@ -163,9 +235,21 @@
                     </div>
                     <h2 class="text-xl font-bold mb-2" style="color: var(--text-primary); line-height: 1.3;">${escapeHtml(site.title)}</h2>
                     ${site.description ? `<p class="font-mono text-xs line-clamp-2" style="color: var(--text-secondary); line-height: 1.5;">${escapeHtml(site.description)}</p>` : ''}
+                    ${meta ? `<p class="font-mono text-xs mt-3" style="color: var(--text-secondary);">${meta}</p>` : ''}
                 </a>
-            `).join('');
+            `;
+            }).join('');
         }
+
+        searchInput.addEventListener('input', function() {
+            searchTerm = this.value;
+            renderSites();
+        });
+
+        sortSelect.addEventListener('change', function() {
+            sortMode = this.value;
+            renderSites();
+        });
 
         loadSites();
     </script>

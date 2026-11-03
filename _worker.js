@@ -279,6 +279,13 @@ var pages_default = `<!DOCTYPE html>
         @keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
         .tag { background: var(--border-color); color: var(--text-secondary); }
         .tag.active { background: var(--color-accent); color: white; }
+        .input-field {
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            outline: none;
+        }
+        .input-field:focus { border-color: var(--color-accent); }
     </style>
 </head>
 <body>
@@ -303,7 +310,18 @@ var pages_default = `<!DOCTYPE html>
                 </button>
             </div>
         </div>
-        <div id="filterBar" class="hidden max-w-6xl mx-auto mt-6 flex justify-end gap-2"></div>
+        <div id="toolbar" class="hidden max-w-6xl mx-auto mt-6">
+            <div class="flex flex-wrap items-center gap-3">
+                <input type="search" id="searchInput" placeholder="搜索标题、标签、路径…" class="input-field flex-1 min-w-[200px] px-3 py-2 font-mono text-xs">
+                <select id="sortSelect" class="input-field px-3 py-2 font-mono text-xs">
+                    <option value="updated">最近更新</option>
+                    <option value="created">最近添加</option>
+                    <option value="title">标题排序</option>
+                </select>
+                <span id="resultCount" class="font-mono text-xs" style="color: var(--text-secondary);"></span>
+            </div>
+            <div id="filterBar" class="hidden mt-4 flex flex-wrap justify-end gap-2"></div>
+        </div>
     </header>
 
     <main class="max-w-6xl mx-auto px-6 py-16">
@@ -328,13 +346,46 @@ var pages_default = `<!DOCTYPE html>
     <script>
         let allSites = [];
         let activeTag = null;
+        let searchTerm = '';
+        let sortMode = 'updated';
         // 私有筛选项的哨兵值：带前导冒号，不会与用户标签名冲突
         const PRIVATE_FILTER = ':private';
+
+        const searchInput = document.getElementById('searchInput');
+        const sortSelect = document.getElementById('sortSelect');
+        const resultCount = document.getElementById('resultCount');
+
+        // 卡片日期：缺失时间戳返回空串，不显示该段
+        function formatDate(ts) {
+            if (!ts) return '';
+            const d = new Date(ts);
+            const pad = n => String(n).padStart(2, '0');
+            return \`\${d.getFullYear()}-\${pad(d.getMonth() + 1)}-\${pad(d.getDate())}\`;
+        }
+
+        function sortSites(list) {
+            const sorted = list.slice();
+            if (sortMode === 'title') {
+                sorted.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh-CN'));
+            } else if (sortMode === 'created') {
+                sorted.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            } else {
+                sorted.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+            }
+            return sorted;
+        }
+
+        function matchesSearch(site, term) {
+            if (!term) return true;
+            const haystack = [site.title, site.description, site.tags, site.slug]
+                .filter(Boolean).join(' ').toLowerCase();
+            return haystack.includes(term);
+        }
 
         async function loadSites() {
             const loading = document.getElementById('loading');
             const empty = document.getElementById('empty');
-            const sitesEl = document.getElementById('sites');
+            const toolbar = document.getElementById('toolbar');
             const filterBar = document.getElementById('filterBar');
 
             try {
@@ -349,6 +400,9 @@ var pages_default = `<!DOCTYPE html>
                     empty.classList.remove('hidden');
                     return;
                 }
+
+                // 有站点才显示搜索/排序工具栏
+                toolbar.classList.remove('hidden');
 
                 const tags = new Set();
                 allSites.forEach(site => {
@@ -390,20 +444,38 @@ var pages_default = `<!DOCTYPE html>
             const sitesEl = document.getElementById('sites');
             const empty = document.getElementById('empty');
 
-            const filtered = activeTag === PRIVATE_FILTER
-                ? allSites.filter(s => s.visibility === 'private')
-                : activeTag
-                    ? allSites.filter(s => s.tags && s.tags.split(',').map(t => t.trim()).includes(activeTag))
-                    : allSites;
+            const term = searchTerm.trim().toLowerCase();
+            const filtered = allSites.filter(site => {
+                if (activeTag === PRIVATE_FILTER) {
+                    if (site.visibility !== 'private') return false;
+                } else if (activeTag) {
+                    const tags = site.tags ? site.tags.split(',').map(t => t.trim()) : [];
+                    if (!tags.includes(activeTag)) return false;
+                }
+                return matchesSearch(site, term);
+            });
+
+            resultCount.textContent = filtered.length ? \`\${filtered.length} / \${allSites.length}\` : '';
 
             if (filtered.length === 0) {
                 empty.classList.remove('hidden');
+                // 有站点但筛不出来时提示是筛选结果为空，不是全站为空
+                const noSites = allSites.length === 0;
+                empty.querySelector('p').textContent = noSites ? '暂无工具' : '没有匹配的网页';
+                empty.querySelector('a').classList.toggle('hidden', !noSites);
                 sitesEl.innerHTML = '';
                 return;
             }
 
             empty.classList.add('hidden');
-            sitesEl.innerHTML = filtered.map(site => \`
+            sitesEl.innerHTML = sortSites(filtered).map(site => {
+                const pageCount = site.isMultiPage && site.pageNames ? site.pageNames.length : 0;
+                const updated = formatDate(site.updatedAt);
+                const meta = [
+                    pageCount ? \`\${pageCount} 页\` : '',
+                    updated ? \`更新 \${updated}\` : ''
+                ].filter(Boolean).join(' · ');
+                return \`
                 <a href="/\${site.slug}" class="card block p-6 border fade-up" style="animation-fill-mode: both; background: var(--bg-card); border-color: var(--border-color);">
                     <div class="flex items-start justify-between mb-3">
                         <div class="flex items-center gap-2">
@@ -419,9 +491,21 @@ var pages_default = `<!DOCTYPE html>
                     </div>
                     <h2 class="text-xl font-bold mb-2" style="color: var(--text-primary); line-height: 1.3;">\${escapeHtml(site.title)}</h2>
                     \${site.description ? \`<p class="font-mono text-xs line-clamp-2" style="color: var(--text-secondary); line-height: 1.5;">\${escapeHtml(site.description)}</p>\` : ''}
+                    \${meta ? \`<p class="font-mono text-xs mt-3" style="color: var(--text-secondary);">\${meta}</p>\` : ''}
                 </a>
-            \`).join('');
+            \`;
+            }).join('');
         }
+
+        searchInput.addEventListener('input', function() {
+            searchTerm = this.value;
+            renderSites();
+        });
+
+        sortSelect.addEventListener('change', function() {
+            sortMode = this.value;
+            renderSites();
+        });
 
         loadSites();
     <\/script>
@@ -479,6 +563,21 @@ var admin_default = `<!DOCTYPE html>
             to { opacity: 1; transform: translateY(0); }
         }
         .page-entry { border-left: 3px solid var(--color-accent); }
+        .entry-btn {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+        .entry-btn:hover:not(:disabled) { border-color: var(--text-primary); color: var(--text-primary); }
+        .entry-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .entry-badge {
+            background: var(--color-accent);
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 999px;
+        }
+        .size-over { color: var(--color-accent); }
 
         /* 必须 !important：.modal-overlay 的 display:flex 特异性同级且在注入顺序后，会盖掉 Tailwind 的 .hidden */
         .hidden { display: none !important; }
@@ -521,6 +620,7 @@ var admin_default = `<!DOCTYPE html>
                     </svg>
                 </button>
                 <a href="/" class="font-mono text-sm transition-colors" style="color: var(--text-secondary);">首页</a>
+                <button id="exportBtn" class="font-mono text-sm transition-colors" style="color: var(--text-secondary);">导出备份</button>
                 <button id="logoutBtn" class="font-mono text-sm transition-colors" style="color: var(--text-secondary);">退出</button>
             </div>
         </div>
@@ -580,18 +680,14 @@ var admin_default = `<!DOCTYPE html>
                         <label class="block font-mono text-xs mb-2 uppercase" style="color: var(--text-secondary);">
                             HTML 内容 <span class="text-xs font-normal">（首条为入口）</span>
                         </label>
-                        <div id="pagesContainer">
-                            <div class="page-entry p-4 mb-4">
-                                <div class="flex gap-4 mb-2 hidden" data-name-row>
-                                    <input type="text" name="pageName" placeholder="页面文件名如：index.html" class="input-field flex-1 p-2 font-mono text-sm">
-                                </div>
-                                <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required></textarea>
+                        <div id="pagesContainer"></div>
+                        <div class="flex items-center justify-between mt-4">
+                            <div class="flex items-center gap-3">
+                                <input type="checkbox" name="isMultiPage" id="isMultiPage" class="w-4 h-4">
+                                <label for="isMultiPage" class="text-sm" style="color: var(--text-secondary);">多页面项目</label>
+                                <button type="button" id="addPageBtn" class="hidden btn-secondary px-3 py-1 font-mono text-xs">+ 添加页面</button>
                             </div>
-                        </div>
-                        <div class="flex items-center gap-3 mt-4">
-                            <input type="checkbox" name="isMultiPage" id="isMultiPage" class="w-4 h-4">
-                            <label for="isMultiPage" class="text-sm" style="color: var(--text-secondary);">多页面项目</label>
-                            <button type="button" id="addPageBtn" class="hidden btn-secondary px-3 py-1 font-mono text-xs">+ 添加页面</button>
+                            <span id="totalSize" class="font-mono text-xs" style="color: var(--text-secondary);"></span>
                         </div>
                     </div>
 
@@ -638,6 +734,10 @@ var admin_default = `<!DOCTYPE html>
         const formMsg = document.getElementById('formMsg');
         const sitesList = document.getElementById('sitesList');
         const logoutBtn = document.getElementById('logoutBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const totalSizeEl = document.getElementById('totalSize');
+        const MAX_PAGE_BYTES = 1_000_000;
+        const MAX_TOTAL_BYTES = 5_000_000;
         const isMultiPage = document.getElementById('isMultiPage');
         const addPageBtn = document.getElementById('addPageBtn');
         const pagesContainer = document.getElementById('pagesContainer');
@@ -682,6 +782,7 @@ var admin_default = `<!DOCTYPE html>
                 return;
             }
             content.classList.remove('hidden');
+            resetPagesContainer();
             loadSites();
         })();
 
@@ -690,52 +791,153 @@ var admin_default = `<!DOCTYPE html>
             window.location.href = '/';
         });
 
-        isMultiPage.addEventListener('change', function() {
-            const nameRows = pagesContainer.querySelectorAll('[data-name-row]');
-            if (this.checked) {
-                addPageBtn.classList.remove('hidden');
-                nameRows.forEach((row, idx) => {
-                    row.classList.remove('hidden');
-                    // 勾选时给首条预填入口名，省一次手动输入
-                    if (idx === 0 && !row.querySelector('[name="pageName"]').value) {
-                        row.querySelector('[name="pageName"]').value = 'index.html';
-                    }
-                });
-            } else {
-                addPageBtn.classList.add('hidden');
-                nameRows.forEach(row => row.classList.add('hidden'));
-                const entries = pagesContainer.querySelectorAll('.page-entry');
-                if (entries.length > 1) {
-                    entries[entries.length - 1].remove();
-                }
+        // 全站备份：下载含 html 的完整站点 JSON
+        exportBtn.addEventListener('click', async () => {
+            try {
+                const res = await apiFetch('/api/sites/export');
+                const data = await res.json();
+                const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = \`htmlbox-backup-\${stamp}.json\`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            } catch (err) {
+                formMsg.textContent = '导出失败';
+                formMsg.className = 'mt-4 font-mono text-sm text-red-600';
+                formMsg.classList.remove('hidden');
             }
         });
 
-        // 页面条目模板：填充（编辑）与初始态共用，删除按钮仅非首页条目可配
-        // 页面名行仅多页面项目可见，由 isMultiPage 勾选态决定
-        function renderPageEntry(page = {}, allowRemove = false) {
-            const removeBtn = allowRemove
-                ? \`<button type="button" onclick="this.closest('.page-entry').remove()" class="btn-danger px-2 py-1 font-mono text-xs">删除</button>\`
-                : '';
+        isMultiPage.addEventListener('change', function() {
+            // 取消勾选时只保留首条
+            const entries = pagesContainer.querySelectorAll('.page-entry');
+            Array.from(entries).slice(1).forEach(entry => entry.remove());
+            if (this.checked && !entries[0].querySelector('[name="pageName"]').value) {
+                entries[0].querySelector('[name="pageName"]').value = 'index.html';
+            }
+            addPageBtn.classList.toggle('hidden', !this.checked);
+            syncPageEntries();
+        });
+
+        // 页面条目模板：填充（编辑）与初始态共用，页名行与操作按钮统一由 syncPageEntries 显隐
+        function renderPageEntry(page = {}) {
             return \`
                 <div class="page-entry p-4 mb-4">
-                    <div class="flex gap-4 mb-2 \${isMultiPage.checked ? '' : 'hidden'}" data-name-row>
-                        <input type="text" name="pageName" placeholder="页面文件名如：index.html" class="input-field flex-1 p-2 font-mono text-sm" value="\${escapeHtml(page.name || '')}">
-                        \${removeBtn}
+                    <div class="flex flex-wrap items-center gap-2 mb-2 hidden" data-name-row>
+                        <input type="text" name="pageName" placeholder="页面文件名如：index.html" class="input-field flex-1 min-w-[140px] p-2 font-mono text-sm" value="\${escapeHtml(page.name || '')}">
+                        <span class="entry-badge font-mono text-xs hidden" data-entry-badge>入口</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <button type="button" data-action="import" class="entry-btn px-2 py-1 font-mono text-xs">从文件导入</button>
+                        <button type="button" data-action="up" class="entry-btn px-2 py-1 font-mono text-xs hidden" title="上移">↑</button>
+                        <button type="button" data-action="down" class="entry-btn px-2 py-1 font-mono text-xs hidden" title="下移">↓</button>
+                        <button type="button" data-action="remove" class="btn-danger px-2 py-1 font-mono text-xs hidden">删除</button>
+                        <input type="file" accept=".html,.htm,text/html" class="hidden" data-file>
                     </div>
                     <textarea name="html" placeholder="<html>...</html>" class="input-field w-full p-4 font-mono text-sm" rows="8" required>\${escapeHtml(page.html || '')}</textarea>
+                    <div class="flex justify-end mt-1">
+                        <span class="font-mono text-xs" data-size style="color: var(--text-secondary);"></span>
+                    </div>
                 </div>
             \`;
         }
 
-        function resetPagesContainer() {
-            pagesContainer.innerHTML = renderPageEntry();
-            addPageBtn.classList.add('hidden');
-            isMultiPage.checked = false;
+        // 体积展示：小于 1KB 用 B，避免出现 0.0 KB
+        function formatBytes(bytes) {
+            if (bytes < 1000) return bytes + ' B';
+            if (bytes >= 1_000_000) return (bytes / 1_000_000).toFixed(1) + ' MB';
+            return (bytes / 1000).toFixed(1) + ' KB';
         }
 
+        // 页名行可见性、入口徽标、上下移禁用态、各条与总量体积，统一在这里同步
+        function syncPageEntries() {
+            const entries = Array.from(pagesContainer.querySelectorAll('.page-entry'));
+            const multi = isMultiPage.checked;
+            let totalBytes = 0;
+
+            entries.forEach((entry, idx) => {
+                const row = entry.querySelector('[data-name-row]');
+                row.classList.toggle('hidden', !multi);
+
+                const badge = entry.querySelector('[data-entry-badge]');
+                badge.classList.toggle('hidden', !(multi && idx === 0));
+
+                const up = entry.querySelector('[data-action="up"]');
+                const down = entry.querySelector('[data-action="down"]');
+                const remove = entry.querySelector('[data-action="remove"]');
+                // 单页站没有排序概念，上下移只在多页时出现
+                up.classList.toggle('hidden', !multi);
+                down.classList.toggle('hidden', !multi);
+                up.disabled = idx === 0;
+                down.disabled = idx === entries.length - 1;
+                // 首条即入口，不允许删除
+                remove.classList.toggle('hidden', !multi || idx === 0);
+
+                const html = entry.querySelector('[name="html"]').value || '';
+                const bytes = new TextEncoder().encode(html).length;
+                totalBytes += bytes;
+                const sizeEl = entry.querySelector('[data-size]');
+                sizeEl.textContent = formatBytes(bytes);
+                sizeEl.classList.toggle('size-over', bytes > MAX_PAGE_BYTES);
+            });
+
+            totalSizeEl.textContent = \`总计 \${formatBytes(totalBytes)} / 5 MB\`;
+            totalSizeEl.classList.toggle('size-over', totalBytes > MAX_TOTAL_BYTES);
+        }
+
+        function resetPagesContainer() {
+            pagesContainer.innerHTML = renderPageEntry();
+            isMultiPage.checked = false;
+            addPageBtn.classList.add('hidden');
+            syncPageEntries();
+        }
+
+        // 条目操作统一走事件委托：上移/下移/删除/文件导入
+        pagesContainer.addEventListener('click', function(e) {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const entry = btn.closest('.page-entry');
+            const action = btn.dataset.action;
+
+            if (action === 'up' && entry.previousElementSibling) {
+                pagesContainer.insertBefore(entry, entry.previousElementSibling);
+            } else if (action === 'down' && entry.nextElementSibling) {
+                pagesContainer.insertBefore(entry.nextElementSibling, entry);
+            } else if (action === 'remove') {
+                entry.remove();
+            } else if (action === 'import') {
+                entry.querySelector('[data-file]').click();
+            }
+            syncPageEntries();
+        });
+
+        // 文件导入：只读取文本填入 textarea，内容校验交给用户与后端
+        pagesContainer.addEventListener('change', function(e) {
+            const input = e.target.closest('[data-file]');
+            if (!input || !input.files || !input.files[0]) return;
+            const entry = input.closest('.page-entry');
+            const file = input.files[0];
+            const reader = new FileReader();
+            reader.onload = () => {
+                entry.querySelector('[name="html"]').value = String(reader.result || '');
+                syncPageEntries();
+            };
+            reader.onerror = () => {
+                formMsg.textContent = '文件读取失败';
+                formMsg.className = 'mt-4 font-mono text-sm text-red-600';
+                formMsg.classList.remove('hidden');
+            };
+            reader.readAsText(file);
+            input.value = '';
+        });
+
+        pagesContainer.addEventListener('input', syncPageEntries);
+
         addPageBtn.addEventListener('click', function() {
-            pagesContainer.insertAdjacentHTML('beforeend', renderPageEntry({}, true));
+            pagesContainer.insertAdjacentHTML('beforeend', renderPageEntry());
+            syncPageEntries();
         });
 
         async function loadSites() {
@@ -851,12 +1053,13 @@ var admin_default = `<!DOCTYPE html>
                 if (site.pages && site.pages.length > 0) {
                     isMultiPage.checked = true;
                     addPageBtn.classList.remove('hidden');
-                    pagesContainer.innerHTML = site.pages.map((page, idx) => renderPageEntry(page, idx > 0)).join('');
+                    pagesContainer.innerHTML = site.pages.map(page => renderPageEntry(page)).join('');
                 } else {
                     isMultiPage.checked = false;
                     addPageBtn.classList.add('hidden');
                     pagesContainer.innerHTML = renderPageEntry({ html: site.html || '' });
                 }
+                syncPageEntries();
 
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             } catch (err) {
@@ -1338,6 +1541,16 @@ async function getSites(request, env, waitUntil) {
   }
   return response;
 }
+async function exportSites(request, env) {
+  const authError = await requireAuth(request, env);
+  if (authError) return authError;
+  const list = await getSiteList(env);
+  const sites = (await Promise.all(list.map((slug) => getSite(env, slug)))).filter(Boolean);
+  return jsonResponse({ exportedAt: Date.now(), sites }, 200, {
+    "Cache-Control": "no-store",
+    "Content-Disposition": 'attachment; filename="htmlbox-backup.json"'
+  });
+}
 async function getSiteDetail(request, env, slug) {
   const authError = await requireAuth(request, env);
   if (authError) return authError;
@@ -1513,6 +1726,9 @@ async function handleApi(path, method, request, env, waitUntil) {
       case "DELETE":
         return deleteSite(request, env);
     }
+  }
+  if (method === "GET" && path === "/api/sites/export") {
+    return exportSites(request, env);
   }
   if (method === "GET" && path.startsWith("/api/sites/")) {
     const slug = path.slice("/api/sites/".length);
